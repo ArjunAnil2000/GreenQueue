@@ -14,13 +14,13 @@
 
 ## Why GreenQueue?
 
-Google has committed to operating on **24/7 carbon-free energy by 2030**. Microsoft aims to be **carbon negative** by the same year. These are ambitious goals — but sustainability is not just the responsibility of hyperscale cloud providers. It is the responsibility of **every individual** who deploys a model, runs a pipeline, or kicks off a batch job.
+Google has committed to operating on **24/7 carbon-free energy by 2030**. Microsoft aims to be **carbon negative** by the same year. These are ambitious goals but sustainability is not just the responsibility of hyperscale cloud providers. It is the responsibility of **every individual** who deploys a model, runs a pipeline, or kicks off a batch job.
 
-Until Google, AWS, and Azure achieve fully carbon-free infrastructure, there is a gap: **the grid that powers our compute still burns fossil fuels**, and the carbon intensity of that grid varies dramatically hour to hour. During midday solar peaks, a US grid region might emit as little as 150 gCO₂/kWh. At 2 AM when gas turbines dominate, that same region can spike past 400 gCO₂/kWh. Most workloads — training runs, ETL pipelines, batch inference — are scheduled without any awareness of this gap.
+Until Google, AWS, and Azure achieve fully carbon-free infrastructure, there is a gap: **the grid that powers our compute still burns fossil fuels**, and the carbon intensity of that grid varies dramatically hour to hour. During midday solar peaks, a US grid region might emit as little as 150 gCO₂/kWh. At 2 AM when gas turbines dominate, that same region can spike past 400 gCO₂/kWh. Most workloads (training runs, ETL pipelines, batch inference) are scheduled without any awareness of this gap.
 
 **GreenQueue closes that gap.** It is a carbon-aware job scheduler that combines real-time grid data from the US Energy Information Administration (EIA), a machine learning forecasting model, and a GPU-aware energy calculator to find the greenest window for your workload. Users tell GreenQueue how long they can wait; GreenQueue tells them exactly when to run.
 
-> The average ML training job on 8× A100 GPUs consumes ~2.4 kWh per hour. Shifting that job by just 4 hours can save **200+ grams of CO₂** — the equivalent of driving a car 0.5 miles. Scale that across thousands of daily jobs in a research cluster or cloud tenant, and the numbers become significant.
+> The average ML training job on 8× A100 GPUs consumes ~2.4 kWh per hour. Shifting that job by just 4 hours can save **200+ grams of CO₂**, the equivalent of driving a car 0.5 miles. Scale that across thousands of daily jobs in a research cluster or cloud tenant, and the numbers become significant.
 
 ---
 
@@ -28,35 +28,35 @@ Until Google, AWS, and Azure achieve fully carbon-free infrastructure, there is 
 
 | Name | Role |
 |------|------|
-| **Arjun Anil** | Backend / ML Forecasting |
-| **Chenglong Yu** | Data Engineering / EIA Integration |
-| **Shivansh Gupta** | Full-Stack / System Architecture |
-| **Sudhi Sharma** | Frontend / Data Visualization |
+| **Arjun Anil** | Backend / Scheduler |
+| **Chenglong Yu** | Data Engineering / Scheduler |
+| **Shivansh Gupta** | Full-Stack / System Architecture / ML |
+| **Sudhi Sharma** | API Integration / Data Visualization |
 
 ---
 
 ## How It Works
 
 ```
-                          ┌──────────────────────────┐
-                          │   User submits a job      │
-                          │   (name, type, priority,  │
+                          ┌──────────────────────────--┐
+                          │   User submits a job       │
+                          │   (name, type, priority,   │
                           │    GPU count, flexibility) │
-                          └────────────┬─────────────┘
+                          └────────────┬─────────────--|
                                        │
-                          ┌────────────▼─────────────┐
-                          │  ML model forecasts next  │
+                          ┌────────────▼─────────────--┐
+                          │  ML model forecasts next   │
                           │  24h of carbon intensity   │
                           │  (GradientBoostingRegressor│
                           │   trained on EIA data)     │
-                          └────────────┬─────────────┘
+                          └────────────┬─────────────--┘
                                        │
-                          ┌────────────▼─────────────┐
+                          ┌────────────▼─────────────--┐
                           │  Scheduler scans forecast  │
                           │  within user's flexibility │
                           │  window → ranks top 3      │
                           │  greenest start times      │
-                          └────────────┬─────────────┘
+                          └────────────┬─────────────--┘
                                        │
                      ┌─────────────────┼─────────────────┐
                      │                                   │
@@ -68,15 +68,15 @@ Until Google, AWS, and Azure achieve fully carbon-free infrastructure, there is 
                      │                                   │
                      └─────────────────┬─────────────────┘
                                        │
-                          ┌────────────▼─────────────┐
+                          ┌────────────▼─────────────-┐
                           │  Background executor runs │
                           │  job at the optimal time  │
-                          └────────────┬─────────────┘
+                          └────────────┬─────────────-┘
                                        │
-                          ┌────────────▼─────────────┐
+                          ┌────────────▼─────────────-┐
                           │  Impact dashboard shows   │
                           │  CO₂ saved vs naive run   │
-                          └──────────────────────────┘
+                          └──────────────────────────-┘
 ```
 
 ---
@@ -85,19 +85,19 @@ Until Google, AWS, and Azure achieve fully carbon-free infrastructure, there is 
 
 ### Intelligent Scheduling
 
-- **Green Window Finder** — User specifies how long they can wait (1–24 hours). The scheduler searches every hour within that window and returns the 3 greenest start times, ranked by carbon intensity.
-- **Priority Classes** — *Latency-Critical* (need it now — get a brown-warning if the grid is dirty), *Flexible* (default — find the best window), *Batch* (scan the full 24h horizon).
-- **Run Immediately** — For urgent jobs: skip the window search and run at the current intensity. GreenQueue still tracks the CO₂ cost so you can see what you "spent."
+- **Green Window Finder**: User specifies how long they can wait (1–24 hours). The scheduler searches every hour within that window and returns the 3 greenest start times, ranked by carbon intensity.
+- **Priority Classes**: *Latency-Critical* (need it now — get a brown-warning if the grid is dirty), *Flexible* (default — find the best window), *Batch* (scan the full 24h horizon).
+- **Run Immediately**: For urgent jobs: skip the window search and run at the current intensity. GreenQueue still tracks the CO₂ cost so you can see what you "spent."
 
 ### GPU-Aware Energy Model
 
-- **Datacenter Scale Simulation** — Slide a GPU slider from 1 to 1,000 to simulate workloads from a single dev machine to a datacenter fleet. The energy model uses A100-class TDP (300W/GPU) to estimate kWh per job.
-- **CO₂ Accounting** — Every job records `co2_total_g` (actual), `co2_naive_g` (if run immediately), and `co2_saved_g` (the difference). These flow into the dashboard and impact page.
+- **Datacenter Scale Simulation**: Slide a GPU slider from 1 to 1,000 to simulate workloads from a single dev machine to a datacenter fleet. The energy model uses A100-class TDP (300W/GPU) to estimate kWh per job.
+- **CO₂ Accounting**: Every job records `co2_total_g` (actual), `co2_naive_g` (if run immediately), and `co2_saved_g` (the difference). These flow into the dashboard and impact page.
 
 ### Real-Time Grid Data
 
-- **EIA API Integration** — Live hourly fuel-type generation data from the US Energy Information Administration. Covers coal, natural gas, nuclear, solar, wind, hydro, and battery storage.
-- **Multi-Region Carbon Comparison** — Compares carbon intensity across **8 GCP cloud regions** (mapped to 7 EIA balancing authorities: MISO, PJM, ERCOT, BPAT, CISO, DUK, NEVP). Sorted greenest-first so users can pick the cleanest datacenter.
+- **EIA API Integration**: Live hourly fuel-type generation data from the US Energy Information Administration. Covers coal, natural gas, nuclear, solar, wind, hydro, and battery storage.
+- **Multi-Region Carbon Comparison**: Compares carbon intensity across **8 GCP cloud regions** (mapped to 7 EIA balancing authorities: MISO, PJM, ERCOT, BPAT, CISO, DUK, NEVP). Sorted greenest-first so users can pick the cleanest datacenter.
 - **10-Day Backfill** — On first startup, GreenQueue fetches 10 days of historical readings to seed the ML model.
 
 ### ML Forecasting
