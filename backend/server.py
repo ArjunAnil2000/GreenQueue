@@ -11,7 +11,7 @@ import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +40,42 @@ class JobSchedule(BaseModel):
 # ---------------------------------------------------------------------------
 # Background job executor — checks every 30s for jobs whose start time arrived
 # ---------------------------------------------------------------------------
+async def hourly_mock_ingestion_loop():
+    """Insert a new mock CarbonReading every time a new hour rolls over."""
+    last_inserted_hour: int | None = None
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            current_hour = now.replace(minute=0, second=0, microsecond=0)
+            hour_key = int(current_hour.timestamp())  # unique per hour
+
+            if hour_key != last_inserted_hour:
+                carbon = generate_mock_carbon_data(timestamp=now)
+                mix = generate_mock_power_breakdown(timestamp=now)
+                async with async_session() as db:
+                    db.add(CarbonReading(
+                        timestamp=current_hour,
+                        date=current_hour.date(),
+                        zone=carbon["zone"],
+                        carbon_intensity=carbon["carbonIntensity"],
+                        **mix,
+                    ))
+                    await db.commit()
+                last_inserted_hour = hour_key
+                print(f"[mock-ingest] Inserted reading for {current_hour.isoformat()} — {carbon['carbonIntensity']} gCO2/kWh")
+
+                # Re-train model so the 24h forecast window shifts
+                try:
+                    stats = train_model()
+                    print(f"[mock-ingest] Model retrained — MAE {stats['mae']}, rows {stats['rows_used']}")
+                except Exception as te:
+                    print(f"[mock-ingest] Model retrain skipped: {te}")
+        except Exception as e:
+            print(f"Mock ingestion error: {e}")
+
+        await asyncio.sleep(30)  # check every 30s
+
+
 async def job_executor_loop():
     """Simulate job execution: scheduled->running->completed based on time."""
     while True:
@@ -75,9 +111,11 @@ async def job_executor_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    task = asyncio.create_task(job_executor_loop())
+    executor_task = asyncio.create_task(job_executor_loop())
+    ingest_task = asyncio.create_task(hourly_mock_ingestion_loop())
     yield
-    task.cancel()
+    executor_task.cancel()
+    ingest_task.cancel()
 
 app = FastAPI(title="GreenQueue", lifespan=lifespan)
 
@@ -257,8 +295,8 @@ async def schedule_job(body: JobSchedule, db: AsyncSession = Depends(get_db)):
 
     return {
         "job_id": job.id, "name": job.name, "status": job.status,
-        "scheduled_start": job.scheduled_start.isoformat(),
-        "scheduled_end": job.scheduled_end.isoformat(),
+        "scheduled_start": job.scheduled_start.isoformat() + "+00:00",
+        "scheduled_end": job.scheduled_end.isoformat() + "+00:00",
         "avg_carbon": job.avg_carbon,
         "naive_carbon": job.naive_carbon,
         "carbon_saved": job.carbon_saved,
@@ -273,12 +311,12 @@ async def list_jobs(db: AsyncSession = Depends(get_db)):
         {
             "id": j.id, "name": j.name, "task_type": j.task_type,
             "duration_hours": j.duration_hours, "status": j.status,
-            "scheduled_start": j.scheduled_start.isoformat() if j.scheduled_start else None,
-            "scheduled_end": j.scheduled_end.isoformat() if j.scheduled_end else None,
+            "scheduled_start": (j.scheduled_start.isoformat() + "+00:00") if j.scheduled_start else None,
+            "scheduled_end": (j.scheduled_end.isoformat() + "+00:00") if j.scheduled_end else None,
             "avg_carbon": j.avg_carbon, "naive_carbon": j.naive_carbon,
             "carbon_saved": j.carbon_saved,
-            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
-            "created_at": j.created_at.isoformat(),
+            "completed_at": (j.completed_at.isoformat() + "+00:00") if j.completed_at else None,
+            "created_at": j.created_at.isoformat() + "+00:00",
         }
         for j in jobs
     ]
@@ -338,42 +376,22 @@ async def job_impact(db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Demo: auto-create sample jobs for hackathon presentation
+# Delete a pending job
 # ---------------------------------------------------------------------------
-DEMO_JOBS = [
-    ("Train Neural Network", "compute", 3),
-    ("Run ETL Pipeline", "data", 2),
-    ("Render 3D Animation", "compute", 4),
-    ("Backup Database", "data", 1),
-    ("Batch Image Processing", "compute", 2),
-]
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Remove a job only if it is still pending (not yet scheduled/running/completed)."""
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("pending", "scheduled"):
+        raise HTTPException(status_code=400, detail=f"Cannot delete job with status '{job.status}'. Only pending or scheduled jobs can be removed.")
+    await db.delete(job)
+    await db.commit()
+    return {"deleted": True, "id": job_id}
 
-@app.post("/api/demo/seed")
-async def seed_demo_jobs(db: AsyncSession = Depends(get_db)):
-    """Create 5 sample jobs at different green windows for a quick demo."""
-    created = []
-    for name, task_type, duration in DEMO_JOBS:
-        job = Job(name=name, task_type=task_type, duration_hours=duration)
-        db.add(job)
-        await db.commit()
-        await db.refresh(job)
 
-        windows = suggest_green_windows(duration)
-        if windows:
-            chosen = windows[0]  # best window
-            job.status = random.choice(["scheduled", "completed", "completed"])
-            job.scheduled_start = datetime.fromisoformat(chosen["start"])
-            job.scheduled_end = datetime.fromisoformat(chosen["end"])
-            job.avg_carbon = chosen["avg_carbon"]
-            job.naive_carbon = chosen["naive_carbon"]
-            job.carbon_saved = chosen["savings_vs_naive"]
-            if job.status == "completed":
-                job.completed_at = datetime.now(timezone.utc)
-            await db.commit()
-
-        created.append({"id": job.id, "name": job.name, "status": job.status})
-
-    return {"created": len(created), "jobs": created}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
