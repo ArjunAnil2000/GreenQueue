@@ -19,22 +19,35 @@ class Task:
 
     def start(self):
         if self.pid is None:
-            # First time starting
-            self.popen = subprocess.Popen(self.cmd, shell=True) # SAVED REFERENCE
+            # First time starting — use a new session so we can signal the
+            # whole process tree (parent + children) with a single kill().
+            self.popen = subprocess.Popen(
+                shlex.split(self.cmd),   # no shell=True; avoids orphaned children
+                start_new_session=True,  # os.setsid — gives us a process group
+            )
             self.pid = self.popen.pid
             self.proc = psutil.Process(self.pid)
+            # Prime cpu_percent for the parent *and* give children a moment
+            # to spawn so they can be primed too.
             self.proc.cpu_percent(interval=None)
         else:
-            # Resuming from a paused state
-            os.kill(self.pid, signal.SIGCONT)
+            # Resuming from a paused state — resume the ENTIRE process group
+            os.killpg(os.getpgid(self.pid), signal.SIGCONT)
+            # Re-prime all processes after resume
             self.proc.cpu_percent(interval=None)
+            for child in self.proc.children(recursive=True):
+                try:
+                    child.cpu_percent(interval=None)
+                except psutil.NoSuchProcess:
+                    pass
 
         self.is_running = True
         print(f"[START/RESUME] Task {self.name} (PID: {self.pid})")
 
     def pause(self):
         if self.pid and self.is_running:
-            os.kill(self.pid, signal.SIGSTOP)
+            # Stop the ENTIRE process group so child workers stop too
+            os.killpg(os.getpgid(self.pid), signal.SIGSTOP)
             self.is_running = False
             print(f"[PAUSE] Task {self.name} (PID: {self.pid}) stopped. I={self.i:.2f}")
 
@@ -63,33 +76,47 @@ class GEASScheduler:
 
     def measure_actual_intensiveness(self, task):
         """
-        Measures the CPU utilization over the last minute for the process tree
-        (parent shell + python script + child workers) and maps it to a 0-10 scale.
+        Measures the CPU utilization of the entire process tree
+        (parent + child workers) using a single timed window, then
+        maps to a 0-10 scale.
         """
         if not task.is_running or task.proc is None:
             return 0.0
 
         try:
-            # 1. Get CPU percent of the main process (often just the shell)
-            total_raw_cpu = task.proc.cpu_percent(interval=30)
-            print(f"parent total raw cpu={total_raw_cpu}")
-
-            # 2. Add the CPU percent of all child processes (the actual workers)
+            # 1. Snapshot cpu_percent for parent AND all children at once
+            #    (non-blocking "prime" call that records the starting point)
+            all_procs = [task.proc]
             for child in task.proc.children(recursive=True):
                 try:
-                    child_cpu = child.cpu_percent(interval=30)
-                    total_raw_cpu += child_cpu
-                    print(f"child {child} cpu={child_cpu}")
+                    child.cpu_percent(interval=None)   # prime each child
+                    all_procs.append(child)
                 except psutil.NoSuchProcess:
-                    pass # A child might have died while we were looping
+                    pass
+            task.proc.cpu_percent(interval=None)       # prime the parent
 
-            # 3. Normalize to a system-wide percentage and map to 0-10
-            system_wide_percent = total_raw_cpu
-            print(f"syswide percent={system_wide_percent}")
-            measured_i = system_wide_percent
-            print(f"measured_i={measured_i}")
+            # 2. Wait once for the measurement window
+            time.sleep(5)
 
-            return min(max(measured_i, 0.0), 10.0)
+            # 3. Collect cpu_percent from every process (non-blocking now)
+            total_raw_cpu = 0.0
+            for p in all_procs:
+                try:
+                    pct = p.cpu_percent(interval=None)
+                    total_raw_cpu += pct
+                except psutil.NoSuchProcess:
+                    pass
+
+            print(f"  [{task.name}] total raw cpu={total_raw_cpu:.1f}%  "
+                  f"(procs measured: {len(all_procs)})")
+
+            # 4. Map to 0-10 scale  (total_raw_cpu is in per-core %;
+            #    e.g. 200% for 2 fully-loaded cores)
+            measured_i = (total_raw_cpu / (self.num_cores * 100.0)) * 10.0
+            measured_i = min(max(measured_i, 0.0), 10.0)
+            print(f"  [{task.name}] measured_i={measured_i:.2f}")
+
+            return measured_i
 
         except psutil.NoSuchProcess:
             return 0.0
@@ -162,11 +189,11 @@ class GEASScheduler:
             while self.queue:
                 task = self.queue.popleft()
                 if task.pid:
-                    try: os.kill(task.pid, signal.SIGTERM)
-                    except ProcessLookupError: pass
+                    try: os.killpg(os.getpgid(task.pid), signal.SIGTERM)
+                    except (ProcessLookupError, OSError): pass
             for t in self.running_tasks:
-                try: os.kill(t.pid, signal.SIGTERM)
-                except ProcessLookupError: pass
+                try: os.killpg(os.getpgid(t.pid), signal.SIGTERM)
+                except (ProcessLookupError, OSError): pass
         print("All tasks have been terminated. Goodbye!")
 
 
