@@ -12,7 +12,7 @@ import argparse
 from collections import deque
 
 class Task:
-    def __init__(self, name, cmd, initial_i=1.0, job_id=None):
+    def __init__(self, name, cmd, initial_i=1.0, job_id=None, nice_value=0):
         self.name = name
         self.cmd = cmd
         self.pid = None
@@ -23,6 +23,7 @@ class Task:
         # job_id determines if this task syncs back to the DB. 
         # CLI tasks default to None and are ignored by DB sync.
         self.job_id = job_id 
+        self.nice_value = nice_value # Store the assigned nice value
 
     def start(self):
         if self.pid is None:
@@ -33,6 +34,11 @@ class Task:
             self.pid = self.popen.pid
             self.proc = psutil.Process(self.pid)
             self.proc.cpu_percent(interval=None)
+
+            try:
+                self.proc.nice(self.nice_value)
+            except psutil.AccessDenied:
+                pass
         else:
             os.killpg(os.getpgid(self.pid), signal.SIGCONT)
             self.proc.cpu_percent(interval=None)
@@ -43,7 +49,7 @@ class Task:
                     pass
 
         self.is_running = True
-        print(f"[START/RESUME] Task {self.name} (PID: {self.pid}) | Command: {self.cmd}")
+        print(f"[START/RESUME] Task {self.name} (PID: {self.pid}) | Command: {self.cmd} | Nice: {self.nice_value}")
 
     def pause(self):
         if self.pid and self.is_running:
@@ -234,6 +240,15 @@ class GEASScheduler:
                 self.ti += task.i
 
             print(f"[STATUS] Current TI: {self.ti:.2f}")
+            
+            tasks_to_evict = [t for t in self.running_tasks if t.i > self.current_gi]
+            for t in tasks_to_evict:
+                t.pause()
+                self.running_tasks.remove(t)
+                self.queue.append(t)
+                self.ti -= t.i
+                print(f"[PREEMPT] Task {t.name} exceeded current GI ({t.i:.2f} > {self.current_gi:.2f}). Evicted.")
+
             capacity = self.k * self.current_gi
             
             while self.ti >= capacity and self.running_tasks:
@@ -244,15 +259,44 @@ class GEASScheduler:
                 self.ti -= heaviest_task.i
                 print(f"[PREEMPT] Evicted {heaviest_task.name}. New TI: {self.ti:.2f}")
 
+            system_cpu_usage = psutil.cpu_percent(interval=None)
+            print(f"[STATUS] System CPU: {system_cpu_usage:.1f}%")
+
+            tasks_to_requeue = []
             while self.queue:
-                next_task = self.queue[0]
+                if system_cpu_usage > 90.0:
+                    print(f"[ADMISSION] System CPU at {system_cpu_usage:.1f}% (> 90%). Halting admissions this tick.")
+                    break
+
+                next_task = self.queue.popleft()
+                
+                if next_task.i > self.current_gi:
+                    tasks_to_requeue.append(next_task)
+                    continue
+                    
                 if self.ti + next_task.i < capacity:
-                    self.queue.popleft()
                     next_task.start()
                     self.running_tasks.append(next_task)
                     self.ti += next_task.i
                 else:
+                    tasks_to_requeue.append(next_task)
                     break
+                    
+            for t in reversed(tasks_to_requeue):
+                self.queue.appendleft(t)
+
+            num_running = len(self.running_tasks)
+            if num_running > 0:
+                step = 19.0 / max(1, num_running - 1) if num_running > 1 else 0
+                for index, t in enumerate(self.running_tasks):
+                    calculated_nice = int(min(19, round(index * step)))
+                    if t.proc and t.nice_value != calculated_nice:
+                        try:
+                            t.proc.nice(calculated_nice)
+                            t.nice_value = calculated_nice
+                            print(f"[PRIORITY] Re-niced {t.name} to {calculated_nice}")
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
 
     def run_scheduler_loop(self):
         try:
