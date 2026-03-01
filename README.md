@@ -168,12 +168,8 @@ backend/
 
 ```bash
 # 1. Clone and enter project
-<<<<<<< HEAD
-git clone https://github.com/ArjunAnil2000/GEAS.git
-cd GEAS
-=======
-cd CheeseHacks2026
->>>>>>> bd9daa8 (fix: include .env for teammates, trim gitignore)
+git clone https://github.com/ArjunAnil2000/GreenQueue.git
+cd GreenQueue
 
 # 2. Create a virtual environment (Python 3.11+)
 python -m venv .venv
@@ -192,11 +188,8 @@ cp backend/.env.example backend/.env   # or create manually:
 # EIA_API_KEY=your_eia_api_key_here
 
 # 5. Start the server
-<<<<<<< HEAD
-# 5.1 Open a tmux window
+# 5.1 Open a tmux window (if you have it installed)
 tmux new -s server
-=======
->>>>>>> bd9daa8 (fix: include .env for teammates, trim gitignore)
 python server.py
 # 5.2 Use Ctrl-b + d to detach tmux window
 # Use `tmux attach -t server` to attach tmux window again
