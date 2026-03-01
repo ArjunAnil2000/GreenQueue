@@ -80,7 +80,7 @@ class GEASScheduler:
     def try_fetch_gi(self):
         if not self.db_path:
             return False
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.UTC)
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         if self.last_fetched_hour == current_hour:
             return True
@@ -130,12 +130,16 @@ class GEASScheduler:
         if not self.db_path:
             return
 
-        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        now = datetime.datetime.now(datetime.UTC)
+        
+        # 1. Precise timestamp for writing completion records
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S.%f')
+        
         try:
             conn = sqlite3.connect(self.db_path, timeout=1.0)
             cursor = conn.cursor()
             
-            # 1. Flush DB jobs that have completed.
+            # Flush DB jobs that have completed using the precise timestamp
             if self.pending_completions:
                 for jid in list(self.pending_completions):
                     cursor.execute(
@@ -146,7 +150,7 @@ class GEASScheduler:
                 self.pending_completions.clear()
                 print("[DB] Successfully flushed completed jobs to database.")
             
-            # 2. Poll for new scheduled jobs
+            # Poll for new scheduled jobs using the minute-truncated timestamp
             cursor.execute(
                 "SELECT id, name, command FROM jobs WHERE status = 'scheduled' AND scheduled_start <= ?",
                 (now_str,)
@@ -320,13 +324,13 @@ def interactive_cli(scheduler, default_initial_i):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tree-VDF Green Energy Scheduler")
-    parser.add_argument("--db", type=str, help="Path to the carbon readings SQLite database", default=None)
+    parser.add_argument("--db", type=str, help="Path to the carbon readings SQLite database", default="./backend/data/greenqueue.db")
     parser.add_argument("--k", type=float, help="System capacity multiplier (k)", default=2.0)
     parser.add_argument("--alpha", type=float, help="EWMA smoothing factor (alpha)", default=0.7)
     parser.add_argument("--initial_i", type=float, help="Default initial intensiveness for tasks", default=1.0)
     parser.add_argument("--zone", type=str, help="The grid zone to fetch carbon readings for", default="US-CAL-CISO")
     parser.add_argument("--interactive", action="store_true", help="Enable interactive CLI mode")
-    parser.add_argument("--log", type=str, help="Path to log file (used in daemon mode)", default="scheduler.log")
+    parser.add_argument("--log", type=str, help="Path to log file (used in daemon mode)", default="./scheduler.log")
     
     args = parser.parse_args()
 
