@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GreenQueue — Smart Carbon-Aware Job Scheduler</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -36,15 +39,9 @@
             </a>
         </li>
         <li>
-            <a href="#" class="nav-link" data-page="schedule">
+            <a href="#" class="nav-link" data-page="job-schedule">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                <span>Schedule</span>
-            </a>
-        </li>
-        <li>
-            <a href="#" class="nav-link" data-page="jobs">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
-                <span>Jobs</span>
+                <span>Job Schedule</span>
             </a>
         </li>
         <li>
@@ -56,7 +53,6 @@
     </ul>
 
     <div class="sidebar-footer">
-        <button id="btn-demo-seed" class="btn btn-outline btn-sm">Seed Demo Data</button>
         <div class="sidebar-meta">CheeseHacks 2026</div>
     </div>
 </nav>
@@ -71,7 +67,7 @@
     <section id="page-dashboard" class="page active">
         <header class="page-header">
             <h1>Dashboard</h1>
-            <p class="page-subtitle">Real-time grid carbon intensity and energy mix overview</p>
+            <div class="subtitle-wrap"><p class="page-subtitle">Real-time grid carbon intensity and energy mix overview</p></div>
         </header>
 
         <!-- KPI row -->
@@ -129,15 +125,43 @@
         </div>
     </section>
 
-    <!-- ─── Schedule Page ──────────────────────────── -->
-    <section id="page-schedule" class="page">
+    <!-- ─── Job Schedule Page (merged) ──────────────── -->
+    <section id="page-job-schedule" class="page">
         <header class="page-header">
-            <h1>Schedule a Task</h1>
-            <p class="page-subtitle">Submit a job to find the greenest execution window</p>
+            <h1>Job Schedule</h1>
+            <div class="subtitle-wrap"><p class="page-subtitle">Schedule tasks and monitor all compute jobs</p></div>
         </header>
 
-        <div class="schedule-layout">
-            <div class="card schedule-form-card">
+        <!-- KPI metrics row -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-label">Total Scheduled</div>
+                <div class="kpi-value" id="js-kpi-scheduled">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Currently Running</div>
+                <div class="kpi-value kpi-accent" id="js-kpi-running">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Completed</div>
+                <div class="kpi-value kpi-green" id="js-kpi-completed">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Carbon Saved</div>
+                <div class="kpi-value kpi-green" id="js-kpi-saved">--</div>
+                <div class="kpi-unit">gCO2 total</div>
+            </div>
+        </div>
+
+        <!-- Schedule task toggle button -->
+        <button class="btn btn-primary" id="btn-open-schedule" style="margin-bottom:24px;">
+            <span>+ Schedule Task</span>
+        </button>
+
+        <!-- Schedule form (full width, hidden by default) -->
+        <div class="card hidden" id="schedule-form-card" style="margin-bottom:24px;">
+            <div class="card-header"><h3>Schedule a New Task</h3></div>
+            <div style="padding:24px;">
                 <form id="form-schedule">
                     <div class="form-group">
                         <label for="job-name">Task Name</label>
@@ -161,30 +185,23 @@
                         <span>Find Green Windows</span>
                     </button>
                 </form>
-            </div>
 
-            <div id="suggestions-panel" class="suggestions-panel hidden">
-                <h3>Recommended Windows</h3>
-                <div id="suggestions-list"></div>
+                <div id="suggestions-panel" class="suggestions-panel hidden" style="margin-top:20px;">
+                    <h3>Recommended Windows</h3>
+                    <div id="suggestions-list"></div>
+                </div>
             </div>
         </div>
-    </section>
 
-    <!-- ─── Jobs Page ──────────────────────────────── -->
-    <section id="page-jobs" class="page">
-        <header class="page-header">
-            <h1>Job Queue</h1>
-            <p class="page-subtitle">Manage and monitor all scheduled compute jobs</p>
-        </header>
-
-        <div class="jobs-stats-row" id="jobs-stats-row"></div>
+        <!-- Jobs table -->
         <div class="card">
+            <div class="card-header"><h3>Job Queue</h3></div>
             <div id="jobs-table-wrap">
                 <table class="jobs-table">
                     <thead>
                         <tr>
                             <th>ID</th><th>Name</th><th>Type</th><th>Duration</th>
-                            <th>Status</th><th>Scheduled</th><th>Carbon</th><th>Saved</th>
+                            <th>Status</th><th>Scheduled</th><th>Carbon</th><th>Saved</th><th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="jobs-tbody"></tbody>
@@ -200,7 +217,7 @@
     <section id="page-impact" class="page">
         <header class="page-header">
             <h1>Environmental Impact</h1>
-            <p class="page-subtitle">Compare smart scheduling versus immediate execution</p>
+            <div class="subtitle-wrap"><p class="page-subtitle">Compare smart scheduling versus immediate execution</p></div>
         </header>
 
         <div class="kpi-row">

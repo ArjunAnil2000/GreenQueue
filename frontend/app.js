@@ -108,8 +108,19 @@ function showPage(name) {
     const linkEl = document.querySelector(`.nav-link[data-page="${name}"]`);
     if (pageEl) pageEl.classList.add('active');
     if (linkEl) linkEl.classList.add('active');
+
+    // Play subtitle typing animation only on first visit, then keep static
+    const sub = pageEl?.querySelector('.page-subtitle');
+    if (sub && !sub.dataset.played) {
+        sub.dataset.played = '1';
+    } else if (sub && sub.dataset.played) {
+        sub.style.animation = 'none';
+        sub.style.maxWidth = '600px';
+        sub.style.borderRight = 'none';
+    }
+
     if (name === 'dashboard') loadDashboard();
-    else if (name === 'jobs') loadJobs();
+    else if (name === 'job-schedule') loadJobSchedule();
     else if (name === 'impact') loadImpact();
 }
 
@@ -198,10 +209,10 @@ function roundedRect(ctx, x, y, w, h, r) {
 /* ══════════════════════════════════════════════════════
    6. ANIMATED AREA/LINE CHART (with hover)
    ══════════════════════════════════════════════════════ */
-function drawAreaChart(canvas, data, { color = COLORS.green, label = '', showDots = false } = {}) {
+function drawAreaChart(canvas, data, { color = COLORS.green, label = '', showDots = false, xLabel = '', yLabel = '' } = {}) {
     if (!data.length) return;
     const { ctx, w, h } = setupCanvas(canvas);
-    const pad = { top: 28, right: 16, bottom: 36, left: 52 };
+    const pad = { top: 20, right: 16, bottom: 44, left: 58 };
     const cw = w - pad.left - pad.right;
     const ch = h - pad.top - pad.bottom;
 
@@ -216,7 +227,7 @@ function drawAreaChart(canvas, data, { color = COLORS.green, label = '', showDot
     }));
 
     // Register for tooltip
-    chartRegistry.set(canvas, { type: 'area', points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots });
+    chartRegistry.set(canvas, { type: 'area', points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots, xLabel, yLabel });
 
     // Animate: progressive reveal left-to-right
     const duration = 800;
@@ -291,8 +302,19 @@ function drawAreaChart(canvas, data, { color = COLORS.green, label = '', showDot
             });
         }
 
-        // Label
-        if (label) { ctx.fillStyle = COLORS.text; ctx.font = 'bold 11px Inter, sans-serif'; ctx.textAlign = 'left'; ctx.fillText(label, pad.left, 14); }
+        // Axis labels
+        if (yLabel) {
+            ctx.save();
+            ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+            ctx.translate(12, pad.top + ch / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText(yLabel, 0, 0);
+            ctx.restore();
+        }
+        if (xLabel) {
+            ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+            ctx.fillText(xLabel, pad.left + cw / 2, h - 1);
+        }
 
         ctx.restore();
 
@@ -355,7 +377,7 @@ function attachAreaHover(canvas) {
 function redrawAreaStatic(canvas) {
     const reg = chartRegistry.get(canvas);
     if (!reg || reg.type !== 'area') return;
-    const { points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots } = reg;
+    const { points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots, xLabel, yLabel } = reg;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, w, h);
     ctx.save();
@@ -404,7 +426,19 @@ function redrawAreaStatic(canvas) {
             ctx.strokeStyle = COLORS.surface; ctx.lineWidth = 1.5; ctx.stroke();
         });
     }
-    if (label) { ctx.fillStyle = COLORS.text; ctx.font = 'bold 11px Inter, sans-serif'; ctx.textAlign = 'left'; ctx.fillText(label, pad.left, 14); }
+    // Axis labels
+    if (yLabel) {
+        ctx.save();
+        ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.translate(12, pad.top + ch / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+    }
+    if (xLabel) {
+        ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(xLabel, pad.left + cw / 2, h - 1);
+    }
     ctx.restore();
 }
 
@@ -465,16 +499,18 @@ function drawDonut(canvas, segments) {
         ctx.font = '10px Inter, sans-serif'; ctx.fillStyle = COLORS.muted;
         ctx.fillText('Total', cx, cy + 12);
 
-        // Legend
-        const legendX = w * 0.7;
-        let legendY = 24;
+        // Legend — centred vertically in right half
+        const legendItemH = 28;
+        const totalLegendH = arcs.length * legendItemH;
+        const legendX = w * 0.68;
+        let legendY = (h - totalLegendH) / 2;
         ctx.textAlign = 'left';
         arcs.forEach(arc => {
             ctx.fillStyle = arc.color;
-            ctx.fillRect(legendX, legendY, 10, 10);
-            ctx.fillStyle = COLORS.text; ctx.font = '11px Inter, sans-serif';
-            ctx.fillText(`${arc.label} ${arc.value.toFixed(1)}%`, legendX + 16, legendY + 9);
-            legendY += 22;
+            ctx.fillRect(legendX, legendY + 2, 12, 12);
+            ctx.fillStyle = COLORS.text; ctx.font = 'bold 13px Inter, sans-serif';
+            ctx.fillText(`${arc.label}  ${arc.value.toFixed(1)}%`, legendX + 20, legendY + 12);
+            legendY += legendItemH;
         });
 
         ctx.restore();
@@ -625,7 +661,7 @@ function attachBarHover(canvas) {
 function drawHeatmap(canvas, data) {
     if (!data.length) return;
     const { ctx, w, h } = setupCanvas(canvas);
-    const pad = { top: 28, right: 16, bottom: 28, left: 42 };
+    const pad = { top: 20, right: 16, bottom: 40, left: 48 };
     const cw = w - pad.left - pad.right;
     const ch = h - pad.top - pad.bottom;
     const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -692,7 +728,9 @@ function drawHeatmap(canvas, data) {
         // Hour labels
         ctx.textAlign = 'center';
         for (let hr = 0; hr < 24; hr += 3) {
-            ctx.fillText(hr + ':00', pad.left + hr * cellW + cellW / 2, pad.top + ch + 16);
+            const ampm = hr >= 12 ? 'pm' : 'am';
+            const h12 = hr % 12 || 12;
+            ctx.fillText(`${h12} ${ampm}`, pad.left + hr * cellW + cellW / 2, pad.top + ch + 14);
         }
 
         ctx.restore();
@@ -717,8 +755,10 @@ function attachHeatmapHover(canvas) {
         const hit = reg.cells.find(c => mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h);
         if (!hit) { hideTooltip(); return; }
 
+        const ampm = hit.hour >= 12 ? 'pm' : 'am';
+        const h12 = hit.hour % 12 || 12;
         showTooltip(
-            `<div class="tt-label">${hit.day} at ${hit.hour}:00</div><div class="tt-value" style="color:${hit.color}">${hit.value.toFixed(1)} gCO2/kWh</div>`,
+            `<div class="tt-label">${hit.day} at ${h12} ${ampm}</div><div class="tt-value" style="color:${hit.color}">${hit.value.toFixed(1)} gCO2/kWh</div>`,
             e.clientX, e.clientY
         );
     });
@@ -748,11 +788,13 @@ async function loadDashboard() {
     animateValue(document.getElementById('kpi-saved'), jobStats.total_carbon_saved);
 
     if (forecast.length) {
-        const fData = forecast.map(f => ({
-            x: new Date(f.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            y: f.carbon_intensity,
-        }));
-        drawAreaChart(document.getElementById('chart-forecast'), fData, { color: COLORS.green, label: 'Predicted gCO2/kWh' });
+        const fData = forecast.map(f => {
+            const d = new Date(f.timestamp);
+            let hr = d.getHours(); const ampm = hr >= 12 ? 'pm' : 'am';
+            hr = hr % 12 || 12;
+            return { x: `${hr} ${ampm}`, y: f.carbon_intensity };
+        });
+        drawAreaChart(document.getElementById('chart-forecast'), fData, { color: COLORS.green, yLabel: 'gCO₂/kWh' });
     }
 
     const sourceSegments = [
@@ -772,12 +814,26 @@ async function loadDashboard() {
         }));
         const step = Math.max(1, Math.floor(hData.length / 72));
         const sampled = hData.filter((_, i) => i % step === 0);
-        drawAreaChart(document.getElementById('chart-history'), sampled, { color: COLORS.accent, label: 'gCO2/kWh over time' });
+        drawAreaChart(document.getElementById('chart-history'), sampled, { color: COLORS.accent, yLabel: 'gCO₂/kWh' });
     }
 
     if (heatmap.length) drawHeatmap(document.getElementById('chart-heatmap'), heatmap);
 }
-
+// ── Schedule form toggle ─────────────────────────────────
+document.getElementById('btn-open-schedule').addEventListener('click', () => {
+    const card = document.getElementById('schedule-form-card');
+    const btn = document.getElementById('btn-open-schedule');
+    if (card.classList.contains('hidden')) {
+        card.classList.remove('hidden');
+        btn.innerHTML = '<span>Cancel</span>';
+        btn.classList.add('btn-danger');
+    } else {
+        card.classList.add('hidden');
+        document.getElementById('suggestions-panel').classList.add('hidden');
+        btn.innerHTML = '<span>+ Schedule Task</span>';
+        btn.classList.remove('btn-danger');
+    }
+});
 // ── Schedule Page ──────────────────────────────────────
 let currentSuggestions = null;
 
@@ -842,28 +898,25 @@ async function scheduleJob(jobId, windowIndex) {
         toast(`"${result.name}" scheduled successfully`, 'success');
         document.getElementById('suggestions-panel').classList.add('hidden');
         document.getElementById('form-schedule').reset();
+        document.getElementById('schedule-form-card').classList.add('hidden');
+        document.getElementById('btn-open-schedule').innerHTML = '<span>+ Schedule Task</span>';
+        document.getElementById('btn-open-schedule').classList.remove('btn-outline');
         currentSuggestions = null;
+        loadJobSchedule();
     } catch (err) { /* handled */ }
 }
 
-// ── Jobs Page ──────────────────────────────────────────
-async function loadJobs() {
+// ── Job Schedule Page (merged) ─────────────────────────
+async function loadJobSchedule() {
     const [jobs, stats] = await Promise.all([api('/jobs'), api('/jobs/stats')]);
 
-    document.getElementById('jobs-stats-row').innerHTML = `
-        <div class="jobs-stat-card">
-            <div class="jobs-stat-label">Total Scheduled</div>
-            <div class="jobs-stat-value">${stats.total_scheduled}</div>
-        </div>
-        <div class="jobs-stat-card">
-            <div class="jobs-stat-label">Currently Running</div>
-            <div class="jobs-stat-value" style="color:${COLORS.amber}">${stats.running_count}</div>
-        </div>
-        <div class="jobs-stat-card">
-            <div class="jobs-stat-label">Completed</div>
-            <div class="jobs-stat-value" style="color:${COLORS.green}">${stats.completed_count}</div>
-        </div>`;
+    // KPI metrics
+    animateValue(document.getElementById('js-kpi-scheduled'), stats.total_scheduled);
+    animateValue(document.getElementById('js-kpi-running'), stats.running_count);
+    animateValue(document.getElementById('js-kpi-completed'), stats.completed_count);
+    animateValue(document.getElementById('js-kpi-saved'), stats.total_carbon_saved);
 
+    // Jobs table
     const tbody = document.getElementById('jobs-tbody');
     const empty = document.getElementById('jobs-empty');
     tbody.innerHTML = '';
@@ -882,10 +935,21 @@ async function loadJobs() {
             <td><span class="status-pill status-${j.status}">${j.status}</span></td>
             <td>${startStr}</td>
             <td>${j.avg_carbon ? j.avg_carbon.toFixed(1) : '--'}</td>
-            <td style="color:${COLORS.green}">${j.carbon_saved ? j.carbon_saved.toFixed(1) : '--'}</td>`;
+            <td style="color:${COLORS.green}">${j.carbon_saved ? j.carbon_saved.toFixed(1) : '--'}</td>
+            <td>${(j.status === 'pending' || j.status === 'scheduled') ? `<button class="btn-remove" onclick="deleteJob(${j.id})">Remove</button>` : ''}</td>`;
         tbody.appendChild(tr);
     });
 }
+
+// ── Delete Job ──────────────────────────────────────────
+window.deleteJob = async function(id) {
+    if (!confirm('Remove this job?')) return;
+    try {
+        await api(`/jobs/${id}`, { method: 'DELETE' });
+        toast('Job removed', 'success');
+        loadJobSchedule();
+    } catch (err) { /* handled by api() */ }
+};
 
 // ── Impact Page ────────────────────────────────────────
 async function loadImpact() {
@@ -916,25 +980,14 @@ async function loadImpact() {
 
     drawAreaChart(document.getElementById('chart-cumulative'),
         impact.map(j => ({ x: j.name.split(' ').slice(0, 2).join(' '), y: j.cumulative_saved })),
-        { color: COLORS.greenLt, label: 'Cumulative gCO2 saved', showDots: true }
+        { color: COLORS.greenLt, showDots: true, xLabel: 'Job', yLabel: 'gCO₂ Saved' }
     );
 }
 
-// ── Demo Seed ──────────────────────────────────────────
-document.getElementById('btn-demo-seed').addEventListener('click', async () => {
-    const btn = document.getElementById('btn-demo-seed');
-    btn.disabled = true; btn.textContent = 'Seeding...';
-    try {
-        const r = await api('/demo/seed', { method: 'POST' });
-        toast(`Created ${r.created} demo jobs`, 'success');
-        const pg = document.querySelector('.page.active')?.id?.replace('page-', '');
-        if (pg) showPage(pg);
-    } catch (err) { /* handled */ }
-    finally { btn.disabled = false; btn.textContent = 'Seed Demo Data'; }
-});
-
-// ── Auto-refresh ───────────────────────────────────────
+// ── Auto-refresh every 30s — keeps data fresh as new readings arrive ──
 setInterval(() => {
     const pg = document.querySelector('.page.active')?.id?.replace('page-', '');
     if (pg === 'dashboard') loadDashboard();
-}, 60000);
+    else if (pg === 'job-schedule') loadJobSchedule();
+    else if (pg === 'impact') loadImpact();
+}, 30000);
