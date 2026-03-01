@@ -11,13 +11,6 @@ build/
 node_modules/
 frontend/dist/
 
-# ---- Environment & secrets ----
-.env
-
-# ---- Database ----
-*.db
-*.sqlite3
-
 # ---- IDE ----
 .vscode/
 .idea/
@@ -25,7 +18,3 @@ frontend/dist/
 # ---- OS ----
 .DS_Store
 Thumbs.db
-
-# ---- ML model artifacts ----
-backend/app/ml/*.pkl
-backend/app/ml/*.joblib
