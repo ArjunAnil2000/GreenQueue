@@ -7,7 +7,6 @@ Run from the backend/ directory:
 
 import os
 import asyncio
-import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -15,13 +14,21 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, extract
+from sqlalchemy import select, func
 from pydantic import BaseModel
 
-from database import init_db, get_db, CarbonReading, Job, async_session
-from mock_energy import generate_mock_carbon_data, generate_mock_power_breakdown
+from database import init_db, get_db, Job, async_session
 from model import train_model, predict_next_24h
 from scheduler import suggest_green_windows
+from config import DATA_SOURCE, get_zone
+from data_source import (
+    get_current_energy as ds_get_current_energy,
+    get_history as ds_get_history,
+    get_stats as ds_get_stats,
+    get_heatmap_data as ds_get_heatmap_data,
+    ingest_current_reading as ds_ingest_current_reading,
+)
+from region_carbon import fetch_region_carbon
 
 
 # ---------------------------------------------------------------------------
@@ -40,40 +47,39 @@ class JobSchedule(BaseModel):
 # ---------------------------------------------------------------------------
 # Background job executor — checks every 30s for jobs whose start time arrived
 # ---------------------------------------------------------------------------
-async def hourly_mock_ingestion_loop():
-    """Insert a new mock CarbonReading every time a new hour rolls over."""
+async def hourly_ingestion_loop():
+    """Insert a new reading every time a new hour rolls over.
+
+    Mock  → generates via sine functions and stores in carbon_readings.
+    Real  → no live ingestion yet (data comes from CSV seed).
+    Both  → retrain the ML model on the active data source.
+    """
     last_inserted_hour: int | None = None
     while True:
         try:
             now = datetime.now(timezone.utc)
             current_hour = now.replace(minute=0, second=0, microsecond=0)
-            hour_key = int(current_hour.timestamp())  # unique per hour
+            hour_key = int(current_hour.timestamp())
 
             if hour_key != last_inserted_hour:
-                carbon = generate_mock_carbon_data(timestamp=now)
-                mix = generate_mock_power_breakdown(timestamp=now)
-                async with async_session() as db:
-                    db.add(CarbonReading(
-                        timestamp=current_hour,
-                        date=current_hour.date(),
-                        zone=carbon["zone"],
-                        carbon_intensity=carbon["carbonIntensity"],
-                        **mix,
-                    ))
-                    await db.commit()
+                result = await ds_ingest_current_reading()
+                if result:
+                    print(f"[ingest] Inserted reading for {result['timestamp']} — {result['carbon_intensity']} gCO2/kWh")
+                else:
+                    print(f"[ingest] No live ingestion for source={DATA_SOURCE} (seeded from CSV)")
+
                 last_inserted_hour = hour_key
-                print(f"[mock-ingest] Inserted reading for {current_hour.isoformat()} — {carbon['carbonIntensity']} gCO2/kWh")
 
                 # Re-train model so the 24h forecast window shifts
                 try:
                     stats = train_model()
-                    print(f"[mock-ingest] Model retrained — MAE {stats['mae']}, rows {stats['rows_used']}")
+                    print(f"[ingest] Model retrained — MAE {stats['mae']}, rows {stats['rows_used']}")
                 except Exception as te:
-                    print(f"[mock-ingest] Model retrain skipped: {te}")
+                    print(f"[ingest] Model retrain skipped: {te}")
         except Exception as e:
-            print(f"Mock ingestion error: {e}")
+            print(f"Ingestion error: {e}")
 
-        await asyncio.sleep(30)  # check every 30s
+        await asyncio.sleep(30)
 
 
 async def job_executor_loop():
@@ -111,8 +117,9 @@ async def job_executor_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    print(f"[startup] DATA_SOURCE = {DATA_SOURCE}")
     executor_task = asyncio.create_task(job_executor_loop())
-    ingest_task = asyncio.create_task(hourly_mock_ingestion_loop())
+    ingest_task = asyncio.create_task(hourly_ingestion_loop())
     yield
     executor_task.cancel()
     ingest_task.cancel()
@@ -143,100 +150,37 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+async def get_config():
+    """Return the active data source so the frontend can display it."""
+    return {"data_source": DATA_SOURCE, "zone": get_zone()}
+
+
 @app.get("/api/energy/current")
-async def get_current_energy():
-    zone = "US-CAL-CISO"
-    carbon = generate_mock_carbon_data(zone)
-    breakdown = generate_mock_power_breakdown(zone)
-    return {
-        "zone": zone,
-        "carbon_intensity": carbon["carbonIntensity"],
-        "timestamp": carbon["datetime"],
-        **breakdown,
-    }
+async def get_current_energy(db: AsyncSession = Depends(get_db)):
+    return await ds_get_current_energy(db)
 
 
 @app.get("/api/energy/history")
 async def get_energy_history(limit: int = 168, db: AsyncSession = Depends(get_db)):
-    query = (
-        select(CarbonReading).where(CarbonReading.zone == "US-CAL-CISO")
-        .order_by(CarbonReading.timestamp.desc()).limit(limit)
-    )
-    result = await db.execute(query)
-    rows = result.scalars().all()
-    return [
-        {
-            "timestamp": r.timestamp.isoformat(),
-            "carbon_intensity": r.carbon_intensity,
-            "solar_pct": r.solar_pct, "wind_pct": r.wind_pct,
-            "gas_pct": r.gas_pct, "coal_pct": r.coal_pct,
-            "nuclear_pct": r.nuclear_pct, "hydro_pct": r.hydro_pct,
-        }
-        for r in rows
-    ]
+    return await ds_get_history(db, limit)
 
 
 @app.get("/api/energy/stats")
 async def get_energy_stats(db: AsyncSession = Depends(get_db)):
-    zone = "US-CAL-CISO"
-    now = datetime.now(timezone.utc)
-
-    async def period_stats(hours_back):
-        cutoff = now - timedelta(hours=hours_back)
-        result = await db.execute(
-            select(
-                func.avg(CarbonReading.carbon_intensity),
-                func.min(CarbonReading.carbon_intensity),
-                func.max(CarbonReading.carbon_intensity),
-                func.count(CarbonReading.id),
-            ).where(CarbonReading.zone == zone, CarbonReading.timestamp >= cutoff)
-        )
-        row = result.one()
-        return {
-            "avg": round(row[0], 1) if row[0] else 0,
-            "min": round(row[1], 1) if row[1] else 0,
-            "max": round(row[2], 1) if row[2] else 0,
-            "count": row[3] or 0,
-        }
-
-    return {
-        "last_24h": await period_stats(24),
-        "last_7d": await period_stats(168),
-        "all_time": await period_stats(999999),
-    }
+    return await ds_get_stats(db)
 
 
 @app.get("/api/energy/heatmap")
 async def get_heatmap(db: AsyncSession = Depends(get_db)):
     """Return avg carbon intensity by hour (0-23) x day-of-week (0-6) for heatmap."""
-    zone = "US-CAL-CISO"
-    result = await db.execute(
-        select(CarbonReading.timestamp, CarbonReading.carbon_intensity)
-        .where(CarbonReading.zone == zone)
-        .order_by(CarbonReading.timestamp.desc())
-        .limit(720)  # ~30 days
-    )
-    rows = result.all()
+    return await ds_get_heatmap_data(db)
 
-    # Build a grid: [day_of_week][hour] -> [values]
-    grid = [[[] for _ in range(24)] for _ in range(7)]
-    for ts, ci in rows:
-        dow = ts.weekday()  # 0=Mon
-        hour = ts.hour
-        grid[dow][hour].append(ci)
 
-    # Average each cell
-    heatmap = []
-    for dow in range(7):
-        for hour in range(24):
-            vals = grid[dow][hour]
-            heatmap.append({
-                "day": dow,
-                "hour": hour,
-                "avg_carbon": round(sum(vals) / len(vals), 1) if vals else 0,
-            })
-
-    return heatmap
+@app.get("/api/regions/carbon")
+async def get_region_carbon():
+    """Compare live carbon intensity across GCP cloud regions."""
+    return await fetch_region_carbon()
 
 
 @app.post("/api/forecast/train")
@@ -246,9 +190,13 @@ async def train_forecast():
 
 
 @app.get("/api/forecast/next24h")
-async def forecast_next24h():
+async def forecast_next24h(db: AsyncSession = Depends(get_db)):
     predictions = predict_next_24h()
-    return predictions
+    # Attach recent actuals so the frontend can overlay real vs predicted
+    recent = await ds_get_history(db, limit=5)
+    # Sort ascending by timestamp (get_history returns desc)
+    recent.sort(key=lambda r: r["timestamp"])
+    return {"forecast": predictions, "actuals": recent}
 
 
 # ---------------------------------------------------------------------------

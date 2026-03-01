@@ -67,8 +67,64 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+# ---------------------------------------------------------------------------
+# Table: eia_readings (REAL data from EIA API)
+# One row = one hourly snapshot of MISO grid generation by fuel type.
+# MW values are actual generation; percentages are derived.
+# ---------------------------------------------------------------------------
+class EIAReading(Base):
+    __tablename__ = "eia_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+    date: Mapped[date] = mapped_column(Date, nullable=True)
+    zone: Mapped[str] = mapped_column(String, default="US-MISO")
+    carbon_intensity: Mapped[float] = mapped_column(Float)
+
+    # Raw MW generation by fuel type
+    coal_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    gas_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    nuclear_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    solar_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    wind_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    hydro_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    battery_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    other_mw: Mapped[float] = mapped_column(Float, default=0.0)
+    total_mw: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # Derived percentages (precomputed for fast API responses)
+    solar_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    wind_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    gas_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    coal_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    nuclear_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    hydro_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    other_pct: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Table: nasa_readings (REAL data from NASA POWER API)
+# One row = one hourly weather / renewable availability snapshot.
+# ---------------------------------------------------------------------------
+class NASAReading(Base):
+    __tablename__ = "nasa_readings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
+    date: Mapped[date] = mapped_column(Date, nullable=True)
+    latitude: Mapped[float] = mapped_column(Float, default=43.0731)
+    longitude: Mapped[float] = mapped_column(Float, default=-89.4012)
+
+    solar_irradiance: Mapped[float] = mapped_column(Float, default=0.0)   # ALLSKY_SFC_SW_DWN
+    clear_sky_solar: Mapped[float] = mapped_column(Float, default=0.0)    # CLRSKY_SFC_SW_DWN
+    wind_speed: Mapped[float] = mapped_column(Float, default=0.0)         # WS50M
+    cloud_cover: Mapped[float] = mapped_column(Float, default=0.0)        # CLOUD_AMT (%)
+    temperature: Mapped[float] = mapped_column(Float, default=0.0)        # T2M (°C)
+    renewable_index: Mapped[float] = mapped_column(Float, default=0.0)    # composite 0–1
+
+
 async def init_db():
-    """Create all tables."""
+    """Create all tables (including new real-data tables)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

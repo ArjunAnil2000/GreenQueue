@@ -5,6 +5,10 @@ Uses GradientBoostingRegressor with time-based features.
 Two main functions:
   - train_model()       → trains on DB data, saves .pkl
   - predict_next_24h()  → loads model, predicts next 24 hours
+
+Respects DATA_SOURCE config:
+  - "mock"  → trains on carbon_readings table
+  - "real"  → trains on eia_readings table
 """
 
 import sqlite3
@@ -17,6 +21,8 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
+
+from config import DATA_SOURCE
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "forecaster_model.pkl")
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "greenqueue.db")
@@ -34,16 +40,22 @@ def _extract_features(df: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
+def _get_training_query() -> str:
+    """Return the SQL query for the active data source's table."""
+    if DATA_SOURCE == "real":
+        return "SELECT timestamp, carbon_intensity FROM eia_readings ORDER BY timestamp"
+    return "SELECT timestamp, carbon_intensity FROM carbon_readings ORDER BY timestamp"
+
+
 def train_model() -> dict:
-    """Train on all historical data, save model to disk. Returns stats dict."""
+    """Train on all historical data from the active source, save model to disk."""
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        "SELECT timestamp, carbon_intensity FROM carbon_readings ORDER BY timestamp", conn
-    )
+    df = pd.read_sql_query(_get_training_query(), conn)
     conn.close()
 
+    source_label = "eia_readings" if DATA_SOURCE == "real" else "carbon_readings"
     if len(df) < 50:
-        raise ValueError(f"Need at least 50 rows, found {len(df)}")
+        raise ValueError(f"Need at least 50 rows in {source_label}, found {len(df)}")
 
     X = _extract_features(df)
     y = df["carbon_intensity"].values
