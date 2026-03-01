@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GreenQueue — Smart Job Scheduler</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>⚡ GreenQueue</h1>
+    <p class="subtitle">Green-energy-aware AI job scheduler</p>
+  </header>
+
+  <main>
+    <!-- Current grid status -->
+    <section class="card" id="current-card">
+      <h2>Current Grid Status</h2>
+      <div class="big-number" id="current-intensity">—</div>
+      <div class="unit">gCO₂/kWh</div>
+      <div class="energy-mix" id="energy-mix"></div>
+      <button onclick="fetchCurrent()">Refresh</button>
+    </section>
+
+    <!-- 24h Forecast -->
+    <section class="card" id="forecast-card">
+      <h2>24-Hour Forecast</h2>
+      <canvas id="forecast-chart" width="700" height="300"></canvas>
+      <div class="actions">
+        <button onclick="fetchForecast()">Load Forecast</button>
+        <button onclick="trainModel()">Re-train Model</button>
+      </div>
+      <p id="forecast-status" class="status"></p>
+    </section>
+
+    <!-- History -->
+    <section class="card" id="history-card">
+      <h2>Recent History (7 days)</h2>
+      <canvas id="history-chart" width="700" height="300"></canvas>
+      <button onclick="fetchHistory()">Load History</button>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

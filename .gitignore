@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ---- Node / Frontend ----
+node_modules/
+frontend/dist/
+
+# ---- Environment & secrets ----
+.env
+
+# ---- Database ----
+*.db
+*.sqlite3
+
+# ---- IDE ----
+.vscode/
+.idea/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- ML model artifacts ----
+backend/app/ml/*.pkl
+backend/app/ml/*.joblib
