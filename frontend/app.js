@@ -444,6 +444,247 @@ function redrawAreaStatic(canvas) {
 
 
 /* ══════════════════════════════════════════════════════
+   6b. FORECAST vs ACTUAL DUAL-LINE CHART
+   ══════════════════════════════════════════════════════ */
+function drawForecastChart(canvas, actuals, forecast, { yLabel = '' } = {}) {
+    if (!forecast.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const pad = { top: 20, right: 16, bottom: 44, left: 58 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+
+    const colorActual = COLORS.accent;
+    const colorForecast = COLORS.green;
+
+    // Build unified x-axis: actuals then forecast
+    // Format hour labels
+    function fmtHour(ts) {
+        const d = new Date(ts);
+        let hr = d.getHours(); const ampm = hr >= 12 ? 'pm' : 'am';
+        hr = hr % 12 || 12;
+        return `${hr} ${ampm}`;
+    }
+
+    const actualPts = actuals.map(a => ({ x: fmtHour(a.timestamp), y: a.carbon_intensity, type: 'actual' }));
+    const forecastPts = forecast.map(f => ({ x: fmtHour(f.timestamp), y: f.carbon_intensity, type: 'forecast' }));
+
+    // The last actual point and first forecast point should connect visually
+    // so we duplicate the last actual as the start of the forecast series
+    const allPts = [...actualPts, ...forecastPts];
+    const dividerIdx = actualPts.length; // index where forecast starts
+
+    const allY = allPts.map(p => p.y);
+    const maxVal = Math.max(...allY) * 1.1 || 1;
+    const minVal = Math.min(0, Math.min(...allY));
+
+    // Compute pixel positions
+    const points = allPts.map((d, i) => ({
+        px: pad.left + (i / Math.max(allPts.length - 1, 1)) * cw,
+        py: pad.top + (1 - (d.y - minVal) / (maxVal - minVal)) * ch,
+        x: d.x, y: d.y, type: d.type,
+    }));
+
+    const dividerX = dividerIdx > 0 ? (points[dividerIdx - 1].px + points[dividerIdx].px) / 2 : pad.left;
+
+    // Register for hover
+    chartRegistry.set(canvas, {
+        type: 'forecast', points, colorActual, colorForecast,
+        pad, cw, ch, w, h, maxVal, minVal, dividerX, yLabel,
+    });
+
+    // Animate
+    const duration = 800;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const clipX = pad.left + cw * eased;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+        drawGrid(ctx, w, h, pad);
+
+        // Y-axis labels
+        ctx.fillStyle = COLORS.muted; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        for (let i = 0; i <= 4; i++) {
+            const val = minVal + (maxVal - minVal) * (1 - i / 4);
+            ctx.fillText(Math.round(val), pad.left - 8, pad.top + (i / 4) * ch + 3);
+        }
+        // X-axis labels
+        ctx.textAlign = 'center';
+        const step = Math.max(1, Math.floor(allPts.length / 8));
+        for (let i = 0; i < allPts.length; i += step) {
+            const x = points[i].px;
+            if (x <= clipX) ctx.fillText(allPts[i].x || '', x, h - 8);
+        }
+
+        // Clip to animated region
+        ctx.beginPath(); ctx.rect(0, 0, clipX, h); ctx.clip();
+
+        // "Now" divider line
+        if (dividerX <= clipX) {
+            ctx.save();
+            ctx.strokeStyle = COLORS.muted + '80';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(dividerX, pad.top);
+            ctx.lineTo(dividerX, pad.top + ch);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // "Now" label
+            ctx.fillStyle = COLORS.muted;
+            ctx.font = 'bold 9px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('NOW', dividerX, pad.top - 6);
+            ctx.restore();
+        }
+
+        // ── Draw actual line (solid, with fill) ──
+        const actPts = points.filter(p => p.type === 'actual');
+        if (actPts.length > 1) {
+            // Fill
+            ctx.beginPath();
+            ctx.moveTo(actPts[0].px, actPts[0].py);
+            for (let i = 1; i < actPts.length; i++) {
+                const xc = (actPts[i - 1].px + actPts[i].px) / 2;
+                const yc = (actPts[i - 1].py + actPts[i].py) / 2;
+                ctx.quadraticCurveTo(actPts[i - 1].px, actPts[i - 1].py, xc, yc);
+            }
+            ctx.lineTo(actPts[actPts.length - 1].px, actPts[actPts.length - 1].py);
+            ctx.lineTo(actPts[actPts.length - 1].px, pad.top + ch);
+            ctx.lineTo(actPts[0].px, pad.top + ch);
+            ctx.closePath();
+            const gA = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
+            gA.addColorStop(0, colorActual + '25');
+            gA.addColorStop(1, colorActual + '03');
+            ctx.fillStyle = gA;
+            ctx.fill();
+
+            // Solid line
+            ctx.beginPath();
+            ctx.moveTo(actPts[0].px, actPts[0].py);
+            for (let i = 1; i < actPts.length; i++) {
+                const xc = (actPts[i - 1].px + actPts[i].px) / 2;
+                const yc = (actPts[i - 1].py + actPts[i].py) / 2;
+                ctx.quadraticCurveTo(actPts[i - 1].px, actPts[i - 1].py, xc, yc);
+            }
+            ctx.strokeStyle = colorActual;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Dots
+            actPts.forEach(p => {
+                ctx.beginPath(); ctx.arc(p.px, p.py, 3.5, 0, Math.PI * 2);
+                ctx.fillStyle = colorActual; ctx.fill();
+                ctx.strokeStyle = COLORS.surface; ctx.lineWidth = 1.5; ctx.stroke();
+            });
+        }
+
+        // ── Draw forecast line (with fill) ──
+        // Start the forecast from the last actual point for continuity
+        const fcStart = actPts.length ? [actPts[actPts.length - 1]] : [];
+        const fcPts = [...fcStart, ...points.filter(p => p.type === 'forecast')];
+        if (fcPts.length > 1) {
+            // Fill
+            ctx.beginPath();
+            ctx.moveTo(fcPts[0].px, fcPts[0].py);
+            for (let i = 1; i < fcPts.length; i++) {
+                const xc = (fcPts[i - 1].px + fcPts[i].px) / 2;
+                const yc = (fcPts[i - 1].py + fcPts[i].py) / 2;
+                ctx.quadraticCurveTo(fcPts[i - 1].px, fcPts[i - 1].py, xc, yc);
+            }
+            ctx.lineTo(fcPts[fcPts.length - 1].px, fcPts[fcPts.length - 1].py);
+            ctx.lineTo(fcPts[fcPts.length - 1].px, pad.top + ch);
+            ctx.lineTo(fcPts[0].px, pad.top + ch);
+            ctx.closePath();
+            const gF = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
+            gF.addColorStop(0, colorForecast + '25');
+            gF.addColorStop(1, colorForecast + '03');
+            ctx.fillStyle = gF;
+            ctx.fill();
+
+            // Solid line
+            ctx.beginPath();
+            ctx.moveTo(fcPts[0].px, fcPts[0].py);
+            for (let i = 1; i < fcPts.length; i++) {
+                const xc = (fcPts[i - 1].px + fcPts[i].px) / 2;
+                const yc = (fcPts[i - 1].py + fcPts[i].py) / 2;
+                ctx.quadraticCurveTo(fcPts[i - 1].px, fcPts[i - 1].py, xc, yc);
+            }
+            ctx.strokeStyle = colorForecast;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        // Y-axis label
+        if (yLabel) {
+            ctx.save();
+            ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+            ctx.translate(12, pad.top + ch / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText(yLabel, 0, 0);
+            ctx.restore();
+        }
+
+        // Legend (top-right)
+        ctx.save();
+        const legendX = w - pad.right - 160;
+        const legendY = pad.top + 4;
+        ctx.font = '10px Inter, sans-serif';
+        // Actual
+        ctx.fillStyle = colorActual;
+        ctx.fillRect(legendX, legendY, 14, 3);
+        ctx.fillStyle = COLORS.text;
+        ctx.textAlign = 'left';
+        ctx.fillText('Actual', legendX + 20, legendY + 4);
+        // Forecast
+        ctx.fillStyle = colorForecast;
+        ctx.fillRect(legendX + 75, legendY, 14, 3);
+        ctx.fillStyle = COLORS.text;
+        ctx.fillText('Forecast', legendX + 95, legendY + 4);
+        ctx.restore();
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // Hover
+    attachForecastHover(canvas);
+}
+
+function attachForecastHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'forecast') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+
+        let closest = null, minDist = Infinity;
+        for (const p of reg.points) {
+            const d = Math.abs(p.px - mx);
+            if (d < minDist) { minDist = d; closest = p; }
+        }
+        if (!closest || minDist > 40) { hideTooltip(); return; }
+
+        const tag = closest.type === 'actual' ? 'Actual' : 'Forecast';
+        const color = closest.type === 'actual' ? reg.colorActual : reg.colorForecast;
+        showTooltip(
+            `<div class="tt-label">${closest.x} · ${tag}</div><div class="tt-value" style="color:${color}">${closest.y.toFixed(1)} gCO₂/kWh</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', hideTooltip);
+}
+
+
+/* ══════════════════════════════════════════════════════
    7. ANIMATED DONUT CHART (with hover)
    ══════════════════════════════════════════════════════ */
 function drawDonut(canvas, segments) {
@@ -495,7 +736,7 @@ function drawDonut(canvas, segments) {
         // Center text (always)
         ctx.fillStyle = COLORS.text; ctx.font = 'bold 20px Inter, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(total.toFixed(0) + '%', cx, cy - 6);
+        ctx.fillText('100%', cx, cy - 6);
         ctx.font = '10px Inter, sans-serif'; ctx.fillStyle = COLORS.muted;
         ctx.fillText('Total', cx, cy + 12);
 
@@ -768,19 +1009,187 @@ function attachHeatmapHover(canvas) {
 
 
 /* ══════════════════════════════════════════════════════
+   9b. HORIZONTAL BAR CHART — GCP Region Carbon Comparison
+   ══════════════════════════════════════════════════════ */
+function drawRegionBars(canvas, regions) {
+    if (!regions.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+
+    const pad = { top: 20, right: 90, bottom: 10, left: 180 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+    const barH = Math.min(32, ch / regions.length - 6);
+    const gap = (ch - barH * regions.length) / (regions.length + 1);
+
+    const maxVal = Math.max(...regions.map(r => r.carbon_intensity)) * 1.15;
+
+    // Color palette: green → yellow → red based on intensity
+    function barColor(ci) {
+        const t = Math.min(ci / 500, 1); // 0 = green, 1 = red
+        if (t < 0.3) return '#34d399';  // green
+        if (t < 0.5) return '#fbbf24';  // yellow
+        if (t < 0.7) return '#fb923c';  // orange
+        return '#f87171';               // red
+    }
+
+    // Store layout for hover
+    const bars = regions.map((r, i) => {
+        const y = pad.top + gap + i * (barH + gap);
+        const barW = (r.carbon_intensity / maxVal) * cw;
+        return { ...r, x: pad.left, y, barW, barH, color: barColor(r.carbon_intensity) };
+    });
+
+    chartRegistry.set(canvas, { type: 'regionBars', bars, w, h, pad });
+
+    // Animate
+    const duration = 600;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        // Faint grid lines
+        ctx.strokeStyle = COLORS.grid;
+        ctx.lineWidth = 0.5;
+        for (let i = 0; i <= 4; i++) {
+            const x = pad.left + (i / 4) * cw;
+            ctx.beginPath();
+            ctx.moveTo(x, pad.top);
+            ctx.lineTo(x, pad.top + ch);
+            ctx.stroke();
+        }
+
+        // Grid value labels at top
+        ctx.fillStyle = COLORS.muted;
+        ctx.font = '10px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        for (let i = 0; i <= 4; i++) {
+            const val = Math.round((i / 4) * maxVal);
+            const x = pad.left + (i / 4) * cw;
+            ctx.fillText(val, x, pad.top - 6);
+        }
+
+        bars.forEach(bar => {
+            const animW = bar.barW * eased;
+
+            // Bar (rounded right end)
+            const radius = Math.min(5, barH / 2);
+            ctx.beginPath();
+            ctx.moveTo(bar.x, bar.y);
+            ctx.lineTo(bar.x + Math.max(0, animW - radius), bar.y);
+            ctx.arcTo(bar.x + animW, bar.y, bar.x + animW, bar.y + radius, radius);
+            ctx.arcTo(bar.x + animW, bar.y + bar.barH, bar.x + animW - radius, bar.y + bar.barH, radius);
+            ctx.lineTo(bar.x, bar.y + bar.barH);
+            ctx.closePath();
+
+            // Gradient fill
+            const grad = ctx.createLinearGradient(bar.x, 0, bar.x + bar.barW, 0);
+            grad.addColorStop(0, bar.color + 'cc');
+            grad.addColorStop(1, bar.color);
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Active region glow
+            if (bar.is_active) {
+                ctx.shadowColor = bar.color;
+                ctx.shadowBlur = 8;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            // Region label (left side)
+            ctx.fillStyle = bar.is_active ? '#fff' : COLORS.text;
+            ctx.font = bar.is_active ? 'bold 12px Inter, sans-serif' : '12px Inter, sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            const labelY = bar.y + bar.barH / 2;
+            ctx.fillText(bar.gcp_region, pad.left - 8, labelY);
+
+            // Active badge
+            if (bar.is_active) {
+                const tag = '★ active';
+                const tagW = ctx.measureText(tag).width + 10;
+                const tx = pad.left - 8 - ctx.measureText(bar.gcp_region).width - tagW - 4;
+                ctx.fillStyle = COLORS.green + '30';
+                ctx.beginPath();
+                ctx.roundRect(tx, labelY - 8, tagW, 16, 4);
+                ctx.fill();
+                ctx.fillStyle = COLORS.green;
+                ctx.font = 'bold 9px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText(tag, tx + tagW / 2, labelY + 1);
+            }
+
+            // Value label (right of bar)
+            ctx.fillStyle = COLORS.text;
+            ctx.font = 'bold 11px JetBrains Mono, monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            if (eased > 0.5) {
+                ctx.globalAlpha = (eased - 0.5) * 2;
+                ctx.fillText(`${bar.carbon_intensity.toFixed(0)} gCO₂/kWh`, bar.x + animW + 8, bar.y + bar.barH / 2);
+                ctx.globalAlpha = 1;
+            }
+        });
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // Hover
+    attachRegionBarHover(canvas);
+}
+
+function attachRegionBarHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'regionBars') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const hit = reg.bars.find(b => mx >= b.x && mx <= b.x + b.barW && my >= b.y && my <= b.y + b.barH);
+        if (!hit) { hideTooltip(); return; }
+
+        const liveTag = hit.is_live ? '<span style="color:#34d399">● Live</span>' : '<span style="color:#fbbf24">● Estimate</span>';
+        showTooltip(
+            `<div class="tt-label">${hit.gcp_region} — ${hit.label}</div>
+             <div class="tt-value" style="color:${hit.color}">${hit.carbon_intensity.toFixed(1)} gCO₂/kWh</div>
+             <div style="font-size:0.7rem;margin-top:2px">${liveTag} · Grid: ${hit.respondent}</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', hideTooltip);
+}
+
+
+/* ══════════════════════════════════════════════════════
    10. PAGE LOADERS
    ══════════════════════════════════════════════════════ */
 
 // ── Dashboard ──────────────────────────────────────────
 async function loadDashboard() {
-    const [current, stats, forecast, history, heatmap, jobStats] = await Promise.all([
+    const [current, stats, forecastResp, history, heatmap, jobStats, regions] = await Promise.all([
         api('/energy/current'),
         api('/energy/stats'),
-        api('/forecast/next24h').catch(() => []),
+        api('/forecast/next24h').catch(() => ({ forecast: [], actuals: [] })),
         api('/energy/history?limit=168'),
         api('/energy/heatmap'),
         api('/jobs/stats'),
+        api('/regions/carbon').catch(() => []),
     ]);
+
+    const forecast = forecastResp.forecast || [];
+    const recentActuals = forecastResp.actuals || [];
 
     animateValue(document.getElementById('kpi-current'), Math.round(current.carbon_intensity));
     animateValue(document.getElementById('kpi-avg24'), stats.last_24h.avg);
@@ -788,13 +1197,7 @@ async function loadDashboard() {
     animateValue(document.getElementById('kpi-saved'), jobStats.total_carbon_saved);
 
     if (forecast.length) {
-        const fData = forecast.map(f => {
-            const d = new Date(f.timestamp);
-            let hr = d.getHours(); const ampm = hr >= 12 ? 'pm' : 'am';
-            hr = hr % 12 || 12;
-            return { x: `${hr} ${ampm}`, y: f.carbon_intensity };
-        });
-        drawAreaChart(document.getElementById('chart-forecast'), fData, { color: COLORS.green, yLabel: 'gCO₂/kWh' });
+        drawForecastChart(document.getElementById('chart-forecast'), recentActuals, forecast, { yLabel: 'gCO₂/kWh' });
     }
 
     const sourceSegments = [
@@ -804,6 +1207,7 @@ async function loadDashboard() {
         { label: 'Nuclear', value: current.nuclear_pct || 0, color: '#a78bfa' },
         { label: 'Hydro',   value: current.hydro_pct || 0,   color: '#34d399' },
         { label: 'Coal',    value: current.coal_pct || 0,    color: '#94a3b8' },
+        { label: 'Other',   value: current.other_pct || 0,   color: '#cbd5e1' },
     ].filter(s => s.value > 0);
     drawDonut(document.getElementById('chart-sources'), sourceSegments);
 
@@ -818,6 +1222,18 @@ async function loadDashboard() {
     }
 
     if (heatmap.length) drawHeatmap(document.getElementById('chart-heatmap'), heatmap);
+
+    // GCP Region Carbon Comparison
+    if (regions.length) {
+        drawRegionBars(document.getElementById('chart-regions'), regions);
+        // Update badge based on data liveness
+        const allLive = regions.every(r => r.is_live);
+        const badge = document.getElementById('region-badge');
+        if (badge) {
+            badge.textContent = allLive ? 'Live EIA Data' : 'Mixed Live + Estimates';
+            badge.className = allLive ? 'badge badge-info' : 'badge badge-neutral';
+        }
+    }
 }
 // ── Schedule form toggle ─────────────────────────────────
 document.getElementById('btn-open-schedule').addEventListener('click', () => {

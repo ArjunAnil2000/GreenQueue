@@ -99,7 +99,7 @@
             <div class="card">
                 <div class="card-header">
                     <h3>24h Forecast</h3>
-                    <span class="badge badge-info">ML Model</span>
+                    <span class="badge badge-info">Actual vs ML Forecast</span>
                 </div>
                 <div class="chart-wrap"><canvas id="chart-forecast"></canvas></div>
             </div>
@@ -121,6 +121,18 @@
             <div class="card">
                 <div class="card-header"><h3>Intensity Heatmap</h3><span class="badge badge-neutral">Hour x Day</span></div>
                 <div class="chart-wrap"><canvas id="chart-heatmap"></canvas></div>
+            </div>
+        </div>
+
+        <!-- GCP Region Carbon Comparison -->
+        <div class="chart-grid one-col">
+            <div class="card">
+                <div class="card-header">
+                    <h3>GCP Region Carbon Comparison</h3>
+                    <span class="badge badge-info" id="region-badge">Live EIA Data</span>
+                </div>
+                <p class="card-desc">Real-time carbon intensity across Google Cloud regions — schedule jobs where the grid is greenest.</p>
+                <div class="chart-wrap chart-wrap-tall"><canvas id="chart-regions"></canvas></div>
             </div>
         </div>
     </section>
