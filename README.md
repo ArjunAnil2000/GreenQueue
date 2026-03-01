@@ -305,6 +305,73 @@ After jobs run, the Impact page shows:
 
 ---
 
+## The Tree-VDF Green Scheduler (`scheduler.py`)
+
+While the backend API handles user requests and ML forecasting, `scheduler.py` is the workhorse engine that actually executes the jobs on the host machine. It is a custom, carbon-aware process scheduler that actively monitors running tasks and dynamically pauses, resumes, or reprioritizes them based on the real-time Greenness Index (GI).
+
+### 1. Starting the Scheduler
+The scheduler runs independently of the web server. You can run it as a silent background daemon (which syncs jobs from the SQLite database) or in Interactive CLI mode for testing.
+
+**Run in Interactive Mode (Recommended for testing/demoing):**
+`bash
+python scheduler.py --interactive
+`
+
+**Run in Daemon Mode (Production):**
+`bash
+python scheduler.py --db ./backend/data/greenqueue.db --log ./scheduler.log
+`
+
+**Available Arguments:**
+* `--interactive`: Launches the interactive command-line interface.
+* `--db`: Path to the SQLite database to sync web-submitted jobs (default: `./backend/data/greenqueue.db`).
+* `--k`: System capacity multiplier (default: `2.0`).
+* `--alpha`: EWMA smoothing factor for calculating CPU intensiveness (default: `0.7`).
+* `--zone`: The electrical grid zone to fetch carbon data for (default: `US-CAL-CISO`).
+* `--initial_i`: Default initial intensiveness for tasks (default: `1.0`).
+
+### 2. Interactive CLI Commands
+When running with `--interactive`, you can manually submit tasks and manipulate the grid's "greenness" to watch the scheduler react in real-time.
+
+* `submit <name> "<command>" [initial_i]`: Submits a new local task to the queue. *(Note: CLI tasks do not sync back to the web DB).*
+    * *Example:* `submit burn "python -c 'while True: pass'"`
+* `gi <value>`: Manually overrides the current Greenness Index (0.0 to 10.0) to simulate sudden grid changes.
+    * *Example:* `gi 3.5` (Simulates a sudden drop in renewable energy).
+* `status`: Prints the current GI, system capacity, and a live breakdown of all running and queued tasks.
+* `exit`: Safely terminates all running tasks and shuts down the scheduler.
+
+### 3. Under the Hood: Smart Resource Management
+This isn't just a simple FIFO queue; it uses advanced OS-level process management:
+
+* **Dynamic Re-Nicing:** To prevent new tasks from starving older ones, the scheduler dynamically recalculates and applies Linux `nice` values (priority levels 0-19) to all running tasks every minute. Older tasks get the lion's share of the CPU.
+* **Carbon Preemption:** If a task's measured CPU intensiveness exceeds the current grid Greenness Index (I > GI), the scheduler sends a `SIGSTOP` signal to pause it, requeues it, and waits for a greener time to send `SIGCONT`.
+* **System Overload Protection:** It monitors global CPU usage using `psutil`. If the system-wide load exceeds 90%, it halts all new admissions to prevent machine lockups.
+
+### The Algorithm: Heuristics & Sustainability
+
+The Tree-VDF Green Scheduler doesn't just blindly queue tasks. It acts as a real-time bridge between operating system resource management and the physical electrical grid. 
+
+
+
+To do this, it continuously calculates and compares three core metrics:
+* **GI (Greenness Index):** A real-time score from `0.0` to `10.0` representing how clean the local power grid is (10 = highest renewable energy saturation).
+* **I (Task Intensiveness):** A score from `0.0` to `10.0` measuring how heavily a specific background task is utilizing the CPU cores. 
+* **TI (Total Intensiveness):** The sum of all currently running tasks' `I` scores.
+
+#### The Scheduling Rules
+Every 60 seconds, the scheduler evaluates the system against these strict heuristic rules:
+
+1. **The Golden Rule of Sustainability ($I \le GI$):** A task is only allowed to run if the grid is "green enough" to support its CPU demands. If a task's Intensiveness (`I`) exceeds the current Greenness Index (`GI`), the task is immediately paused (`SIGSTOP`) and evicted back to the queue. Heavy tasks *must* wait for green grid hours.
+2. **Dynamic System Capacity ($TI < k \times GI$):** The total allowed compute load on the machine expands and contracts with the grid. The maximum allowed capacity is `k * GI` (where `k` is a user-defined multiplier, default `2.0`). If a sudden drop in solar/wind power causes the `GI` to plummet, the system capacity shrinks. If $TI$ exceeds this new lower capacity, the scheduler pauses the heaviest running tasks until the system fits within the green budget.
+3. **EWMA CPU Smoothing:** To prevent tasks from being unfairly paused due to momentary split-second CPU spikes, the scheduler calculates Task Intensiveness (`I`) using an Exponentially Weighted Moving Average (EWMA). This smooths out the measurements over time, allowing for realistic sustained workload evaluations.
+
+#### Why This Matters for Sustainability
+Data centers and heavy compute jobs (like ML training, video rendering, or batch processing) are massive energy sinks. Naive schedulers run these jobs the exact millisecond they are submitted, even if the local grid is currently burning coal or natural gas to meet peak evening demand. 
+
+By strictly enforcing **Capacity = $k \times GI$**, GreenQueue physically forces non-urgent compute workloads to execute during off-peak, high-renewable windows (like sunny afternoons with high solar output or windy nights). This actively reduces the actual carbon footprint of the software without requiring the developer to change a single line of their processing code.
+
+---
+
 *Built with care for the planet at CheeseHacks 2026, University of Wisconsin–Madison.*
 
 **Every watt-hour counts. Every hour matters.**
