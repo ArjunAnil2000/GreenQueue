@@ -27,18 +27,22 @@ class Task:
 
     def start(self):
         if self.pid is None:
-            self.popen = subprocess.Popen(
-                shlex.split(self.cmd),
-                start_new_session=True,
-            )
-            self.pid = self.popen.pid
-            self.proc = psutil.Process(self.pid)
-            self.proc.cpu_percent(interval=None)
-
             try:
-                self.proc.nice(self.nice_value)
-            except psutil.AccessDenied:
-                pass
+                self.popen = subprocess.Popen(
+                    shlex.split(self.cmd),
+                    start_new_session=True,
+                )
+                self.pid = self.popen.pid
+                self.proc = psutil.Process(self.pid)
+                self.proc.cpu_percent(interval=None)
+
+                try:
+                    self.proc.nice(self.nice_value)
+                except psutil.AccessDenied:
+                    pass
+            except Exception as e:
+                print(f"[ERROR] Could not start task '{self.name}'. Command '{self.cmd}' failed: {e}")
+                self.is_running = False
         else:
             os.killpg(os.getpgid(self.pid), signal.SIGCONT)
             self.proc.cpu_percent(interval=None)
@@ -299,12 +303,15 @@ class GEASScheduler:
                             pass
 
     def run_scheduler_loop(self):
-        try:
-            while True:
+        print("[DAEMON] Scheduler loop started.")
+        while True:
+            try:
                 self.tick_minute()
-                time.sleep(10) # Testing interval (change to 60 for prod)
-        except Exception as e:
-            print(f"Scheduler loop error: {e}")
+            except Exception as e:
+                # Catch the error, log it, but KEEP THE LOOP ALIVE
+                print(f"[CRITICAL] Scheduler tick encountered an error: {e}")
+            
+            time.sleep(10) # Testing interval (change to 60 for prod)
 
     def shutdown(self):
         print("\nShutting down scheduler... Aborting all tasks...")
