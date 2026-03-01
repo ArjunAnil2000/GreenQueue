@@ -376,6 +376,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 
 input[type="text"],
 input[type="number"],
+input[type="datetime-local"],
 select {
     width: 100%;
     padding: 10px 14px;
@@ -397,6 +398,121 @@ select {
     background-repeat: no-repeat;
     background-position: right 12px center;
     padding-right: 32px;
+}
+
+/* ── GPU Scale Slider ────────────────────────────────── */
+.gpu-scale-wrap {
+    display: flex; align-items: center; gap: 16px;
+}
+.gpu-slider {
+    flex: 1;
+    -webkit-appearance: none; appearance: none;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    outline: none;
+}
+.gpu-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px;
+    background: var(--green-500);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
+}
+.gpu-scale-info {
+    display: flex; align-items: center; gap: 6px;
+    white-space: nowrap;
+}
+.gpu-input {
+    width: 72px !important;
+    text-align: center;
+    font-weight: 600;
+}
+.gpu-unit {
+    color: var(--text-muted); font-size: 0.85rem; font-weight: 600;
+}
+.gpu-energy-preview {
+    margin-top: 8px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    padding: 8px 12px;
+    background: var(--bg-surface);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+.gpu-energy-preview strong {
+    color: var(--green-500);
+}
+
+/* ── File Upload ─────────────────────────────────────── */
+.file-upload-wrap {
+    position: relative;
+}
+.file-input {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; z-index: 2;
+}
+.file-label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    background: var(--bg-surface);
+    border: 1px dashed var(--border-light);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: border-color var(--transition);
+}
+.file-upload-wrap:hover .file-label {
+    border-color: var(--green-500);
+}
+.file-name {
+    display: block;
+    margin-top: 6px;
+    font-size: 0.82rem;
+    color: var(--green-500);
+    font-weight: 600;
+}
+
+/* ── Form Actions (dual button row) ──────────────────── */
+.form-actions {
+    display: flex; gap: 12px; margin-top: 8px;
+}
+.form-actions .btn {
+    flex: 1;
+}
+
+/* ── Priority / Mode pills in table ──────────────────── */
+.priority-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.mode-pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.mode-pill.optimized { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+.mode-pill.immediate { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+
+/* ── Brown Warning ───────────────────────────────────── */
+.brown-warning {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px;
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: var(--radius-sm);
+    color: #fbbf24;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-bottom: 12px;
 }
 
 /* ── Suggestions ─────────────────────────────────────── */
@@ -535,6 +651,14 @@ select {
 .status-scheduled  { background: var(--accent-glow); color: var(--accent-light); }
 .status-running    { background: rgba(251,191,36,0.12); color: var(--amber-400); }
 .status-completed  { background: var(--green-glow); color: var(--green-400); }
+.status-queued     { background: rgba(245,166,35,0.12); color: #f5a623; }
+.status-paused     { background: rgba(249,115,22,0.12); color: #f97316; }
+.status-failed     { background: rgba(239,68,68,0.12); color: #ef4444; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
 
 .btn-remove {
     padding: 4px 12px;

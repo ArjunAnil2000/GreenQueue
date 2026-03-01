@@ -362,7 +362,7 @@ function attachAreaHover(canvas) {
         ctx.restore();
 
         showTooltip(
-            `<div class="tt-label">${closest.x}</div><div class="tt-value" style="color:${reg.color}">${closest.y.toFixed(1)} gCO2/kWh</div>`,
+            `<div class="tt-label">${closest.x}</div><div class="tt-value" style="color:${reg.color}">${closest.y.toFixed(1)} ${reg.yLabel || 'gCO\u2082/kWh'}</div>`,
             e.clientX, e.clientY
         );
     });
@@ -799,26 +799,29 @@ function attachDonutHover(canvas) {
 function drawGroupedBars(canvas, data, { colors = [COLORS.accent, COLORS.green], labels = ['Naive', 'Smart'] } = {}) {
     if (!data.length) return;
     const { ctx, w, h } = setupCanvas(canvas);
-    const pad = { top: 36, right: 16, bottom: 36, left: 52 };
+    const pad = { top: 36, right: 16, bottom: 44, left: 58 };
     const cw = w - pad.left - pad.right;
     const ch = h - pad.top - pad.bottom;
     const maxVal = Math.max(...data.flatMap(d => [d.v1, d.v2])) * 1.15 || 1;
     const n = data.length;
     const groupW = cw / n;
-    const barW = groupW * 0.3;
+    const barW = Math.min(groupW * 0.3, 48);
     const gap = groupW * 0.1;
+
+    // Strip any alpha suffix to base 7-char hex for consistent gradient building
+    function baseHex(c) { return c.length > 7 ? c.slice(0, 7) : c; }
 
     // Pre-calculate bar positions
     const bars = [];
     data.forEach((d, i) => {
         const gx = pad.left + i * groupW + groupW / 2;
         bars.push(
-            { x: gx - barW - gap / 2, fullH: (d.v1 / maxVal) * ch, color: colors[0] + 'aa', label: d.label, value: d.v1, group: labels[0] },
-            { x: gx + gap / 2,        fullH: (d.v2 / maxVal) * ch, color: colors[1],        label: d.label, value: d.v2, group: labels[1] }
+            { x: gx - barW - gap / 2, fullH: (d.v1 / maxVal) * ch, baseColor: baseHex(colors[0]), label: d.label, value: d.v1, group: labels[0] },
+            { x: gx + gap / 2,        fullH: (d.v2 / maxVal) * ch, baseColor: baseHex(colors[1]), label: d.label, value: d.v2, group: labels[1] }
         );
     });
 
-    chartRegistry.set(canvas, { type: 'bars', bars, barW, pad, ch, cw, w, h, maxVal, colors, labels, data });
+    chartRegistry.set(canvas, { type: 'bars', bars, barW, pad, ch, cw, w, h, maxVal, colors: colors.map(baseHex), labels, data });
 
     // Animate: bars grow from bottom
     const duration = 700;
@@ -841,27 +844,56 @@ function drawGroupedBars(canvas, data, { colors = [COLORS.accent, COLORS.green],
 
         bars.forEach(b => {
             const bh = b.fullH * eased;
-            ctx.fillStyle = b.color;
+            if (bh <= 0) return;
+
+            // Gradient fill (matches dashboard region-bar style)
+            const grad = ctx.createLinearGradient(0, pad.top + ch - bh, 0, pad.top + ch);
+            grad.addColorStop(0, b.baseColor);
+            grad.addColorStop(1, b.baseColor + '88');
+            ctx.fillStyle = grad;
+
+            // Subtle glow
+            ctx.shadowColor = b.baseColor + '60';
+            ctx.shadowBlur = 6;
+
             ctx.beginPath();
-            roundedRect(ctx, b.x, pad.top + ch - bh, barW, bh, 3);
+            roundedRect(ctx, b.x, pad.top + ch - bh, barW, bh, 4);
             ctx.fill();
+
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
         });
 
         // X labels
         ctx.fillStyle = COLORS.muted; ctx.font = '9px Inter, sans-serif'; ctx.textAlign = 'center';
         data.forEach((d, i) => {
             const gx = pad.left + i * groupW + groupW / 2;
-            const lbl = d.label.length > 10 ? d.label.slice(0, 10) + '..' : d.label;
+            const lbl = d.label.length > 12 ? d.label.slice(0, 12) + '..' : d.label;
             ctx.fillText(lbl, gx, h - 8);
         });
 
-        // Legend
-        ctx.font = 'bold 10px Inter, sans-serif';
+        // Y-axis label
+        ctx.save();
+        ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.translate(12, pad.top + ch / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText('gCO\u2082/kWh', 0, 0);
+        ctx.restore();
+
+        // Legend (top-right, matches dashboard forecast chart style)
+        ctx.save();
+        const legendX = w - pad.right - 220;
+        const legendY = 10;
+        ctx.font = '10px Inter, sans-serif';
         labels.forEach((lbl, i) => {
-            const lx = pad.left + i * 120;
-            ctx.fillStyle = colors[i]; ctx.fillRect(lx, 10, 10, 10);
-            ctx.fillStyle = COLORS.text; ctx.fillText(lbl, lx + 14, 19);
+            const lx = legendX + i * 130;
+            ctx.fillStyle = baseHex(colors[i]);
+            ctx.fillRect(lx, legendY, 14, 4);
+            ctx.fillStyle = COLORS.text;
+            ctx.textAlign = 'left';
+            ctx.fillText(lbl, lx + 20, legendY + 5);
         });
+        ctx.restore();
 
         ctx.restore();
         if (progress < 1) requestAnimationFrame(frame);
@@ -887,7 +919,7 @@ function attachBarHover(canvas) {
         if (!hit) { hideTooltip(); return; }
 
         showTooltip(
-            `<div class="tt-label">${hit.label}</div><div class="tt-row"><div class="tt-dot" style="background:${hit.color}"></div><span>${hit.group}</span></div><div class="tt-value">${hit.value.toFixed(1)} gCO2/kWh</div>`,
+            `<div class="tt-label">${hit.label}</div><div class="tt-row"><div class="tt-dot" style="background:${hit.baseColor}"></div><span>${hit.group}</span></div><div class="tt-value">${hit.value.toFixed(1)} gCO\u2082/kWh</div>`,
             e.clientX, e.clientY
         );
     });
@@ -999,7 +1031,7 @@ function attachHeatmapHover(canvas) {
         const ampm = hit.hour >= 12 ? 'pm' : 'am';
         const h12 = hit.hour % 12 || 12;
         showTooltip(
-            `<div class="tt-label">${hit.day} at ${h12} ${ampm}</div><div class="tt-value" style="color:${hit.color}">${hit.value.toFixed(1)} gCO2/kWh</div>`,
+            `<div class="tt-label">${hit.day} at ${h12} ${ampm}</div><div class="tt-value" style="color:${hit.color}">${hit.value.toFixed(1)} gCO\u2082/kWh</div>`,
             e.clientX, e.clientY
         );
     });
@@ -1235,124 +1267,326 @@ async function loadDashboard() {
         }
     }
 }
-// ── Schedule form toggle ─────────────────────────────────
-document.getElementById('btn-open-schedule').addEventListener('click', () => {
-    const card = document.getElementById('schedule-form-card');
-    const btn = document.getElementById('btn-open-schedule');
+// ── Scheduler Mode Toggle ─────────────────────────────────
+let schedulerMode = 'windows'; // 'windows' or 'geas'
+
+function setMode(mode) {
+    schedulerMode = mode;
+    document.getElementById('windows-panel').classList.toggle('hidden', mode !== 'windows');
+    document.getElementById('geas-panel').classList.toggle('hidden', mode !== 'geas');
+    // GEAS-only elements
+    document.querySelectorAll('.geas-only').forEach(el => el.classList.toggle('hidden', mode !== 'geas'));
+    // Toggle buttons
+    const wBtn = document.getElementById('mode-btn-windows');
+    const gBtn = document.getElementById('mode-btn-geas');
+    if (mode === 'windows') {
+        wBtn.style.background = 'var(--accent)'; wBtn.style.color = '#fff';
+        gBtn.style.background = 'transparent'; gBtn.style.color = 'var(--text-muted)';
+    } else {
+        gBtn.style.background = 'var(--accent)'; gBtn.style.color = '#fff';
+        wBtn.style.background = 'transparent'; wBtn.style.color = 'var(--text-muted)';
+    }
+    loadJobSchedule();
+}
+
+document.getElementById('mode-btn-windows').addEventListener('click', () => setMode('windows'));
+document.getElementById('mode-btn-geas').addEventListener('click', () => setMode('geas'));
+
+// ── Green Windows form toggle ─────────────────────────────
+document.getElementById('btn-open-windows').addEventListener('click', () => {
+    const card = document.getElementById('windows-form-card');
+    const btn = document.getElementById('btn-open-windows');
     if (card.classList.contains('hidden')) {
         card.classList.remove('hidden');
         btn.innerHTML = '<span>Cancel</span>';
         btn.classList.add('btn-danger');
     } else {
         card.classList.add('hidden');
-        document.getElementById('suggestions-panel').classList.add('hidden');
-        btn.innerHTML = '<span>+ Schedule Task</span>';
+        document.getElementById('suggestions-card').classList.add('hidden');
+        btn.innerHTML = '<span>+ Schedule a Job</span>';
         btn.classList.remove('btn-danger');
     }
 });
-// ── Schedule Page ──────────────────────────────────────
-let currentSuggestions = null;
 
-document.getElementById('form-schedule').addEventListener('submit', async e => {
-    e.preventDefault();
-    const btn = document.getElementById('btn-suggest');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+// ── GPU Slider Sync ─────────────────────────────────────
+const gpuRange = document.getElementById('win-gpu-range');
+const gpuInput = document.getElementById('win-gpu-scale');
+const gpuPreview = document.getElementById('gpu-energy-preview');
+function updateGpuPreview() {
+    const n = parseInt(gpuRange.value) || 1;
+    gpuInput.value = n;
+    gpuRange.value = n;
+    const kwh = (300 * n * 1) / 1000;  // 1-hour job duration
+    gpuPreview.textContent = `≈ ${kwh.toFixed(1)} kWh per run`;
+}
+gpuRange.addEventListener('input', updateGpuPreview);
+gpuInput.addEventListener('input', () => { gpuRange.value = gpuInput.value; updateGpuPreview(); });
+
+// ── File Upload ─────────────────────────────────────────
+let uploadedFilename = '';
+document.getElementById('win-demo-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    document.getElementById('file-name').textContent = file.name;
+    const form = new FormData();
+    form.append('file', file);
     try {
-        const data = await api('/jobs/suggest', {
-            method: 'POST',
-            body: JSON.stringify({
-                name: document.getElementById('job-name').value,
-                task_type: document.getElementById('job-type').value,
-                duration_hours: parseInt(document.getElementById('job-duration').value),
-            }),
-        });
-        currentSuggestions = data;
-        renderSuggestions(data);
-        toast('Green windows found', 'success');
-    } catch (err) { /* toast fired */ }
-    finally { btn.disabled = false; btn.innerHTML = '<span>Find Green Windows</span>'; }
+        const data = await fetch('/api/jobs/upload-demo', { method: 'POST', body: form }).then(r => r.json());
+        uploadedFilename = data.filename;
+        toast(`Uploaded "${data.filename}"`, 'success');
+    } catch { toast('File upload failed', 'error'); }
 });
 
+// ── Green Windows: Schedule Optimally ───────────────────
+document.getElementById('form-windows').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('btn-find-windows');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Finding green windows...';
+    document.getElementById('brown-warning').classList.add('hidden');
+    try {
+        const payload = {
+            name: document.getElementById('win-name').value,
+            task_type: document.getElementById('win-type').value,
+            flexibility_hours: parseInt(document.getElementById('win-flexibility').value),
+            priority_class: document.getElementById('win-priority').value,
+            gpu_scale: parseInt(gpuRange.value) || 1,
+        };
+        if (uploadedFilename) payload.demo_file = uploadedFilename;
+        const data = await api('/jobs/suggest', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+        window._pendingJobId = data.job_id;
+        renderSuggestions(data);
+        toast(`Found ${data.suggestions.length} green windows for "${data.job_name}"`, 'success');
+    } catch(err) { /* toast by api() */ }
+    finally { btn.disabled = false; btn.innerHTML = '<span>⚡ Schedule Optimally</span>'; }
+});
+
+// ── Run Immediately ─────────────────────────────────────
+document.getElementById('btn-run-now').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-run-now');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Starting...';
+    try {
+        let jobId = window._pendingJobId;
+        if (!jobId) {
+            // Create the job first
+            const payload = {
+                name: document.getElementById('win-name').value,
+                task_type: document.getElementById('win-type').value,
+                flexibility_hours: parseInt(document.getElementById('win-flexibility').value),
+                priority_class: document.getElementById('win-priority').value,
+                gpu_scale: parseInt(gpuRange.value) || 1,
+            };
+            if (uploadedFilename) payload.demo_file = uploadedFilename;
+            const created = await api('/jobs/suggest', { method: 'POST', body: JSON.stringify(payload) });
+            jobId = created.job_id;
+        }
+        const data = await api('/jobs/run-now', {
+            method: 'POST',
+            body: JSON.stringify({ job_id: jobId }),
+        });
+        toast(`"${data.name}" running immediately at ${data.avg_carbon.toFixed(0)} gCO₂/kWh`, 'info');
+        resetFormAndClose();
+        loadJobSchedule();
+    } catch(err) { /* toast by api() */ }
+    finally { btn.disabled = false; btn.innerHTML = '<span>▶ Run Immediately</span>'; }
+});
+
+function resetFormAndClose() {
+    document.getElementById('form-windows').reset();
+    document.getElementById('suggestions-card').classList.add('hidden');
+    document.getElementById('windows-form-card').classList.add('hidden');
+    document.getElementById('brown-warning').classList.add('hidden');
+    document.getElementById('btn-open-windows').innerHTML = '<span>+ Schedule a Job</span>';
+    document.getElementById('btn-open-windows').classList.remove('btn-danger');
+    document.getElementById('file-name').textContent = '';
+    uploadedFilename = '';
+    window._pendingJobId = null;
+    gpuRange.value = 1; gpuInput.value = 1;
+    updateGpuPreview();
+}
+
 function renderSuggestions(data) {
-    const panel = document.getElementById('suggestions-panel');
+    const card = document.getElementById('suggestions-card');
     const list = document.getElementById('suggestions-list');
-    panel.classList.remove('hidden');
+    card.classList.remove('hidden');
     list.innerHTML = '';
 
-    if (!data.suggestions.length) {
-        list.innerHTML = '<p class="empty-state">No forecast available. Train the ML model first.</p>';
-        return;
+    // Show brown warning if applicable
+    if (data.brown_warning) {
+        const bw = document.getElementById('brown-warning');
+        bw.classList.remove('hidden');
+        bw.innerHTML = `<strong>⚠ High Carbon Alert:</strong> Current intensity is <strong>${data.brown_warning.current_ci.toFixed(0)} gCO₂/kWh</strong>. Consider scheduling for a greener window to save up to <strong>${data.brown_warning.potential_savings.toFixed(0)} gCO₂</strong>.`;
     }
 
     data.suggestions.forEach((s, idx) => {
-        const start = new Date(s.start);
-        const end = new Date(s.end);
-        const timeStr = `${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-        const dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
-        const card = document.createElement('div');
-        card.className = 'suggestion-card';
-        card.style.animationDelay = (idx * 120) + 'ms';
-        card.innerHTML = `
-            <div class="suggestion-rank">${idx === 0 ? 'Best Window' : 'Option ' + (idx + 1)}</div>
-            <div class="suggestion-time">${dateStr} ${timeStr}</div>
-            <div class="suggestion-stats">
-                <span>${s.avg_carbon.toFixed(1)} gCO2/kWh</span>
-                <span class="stat-good">Saves ${s.savings_vs_naive.toFixed(1)} gCO2/kWh vs now</span>
-            </div>`;
-        card.addEventListener('click', () => scheduleJob(data.job_id, idx));
-        list.appendChild(card);
+        const start = new Date(s.start).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const el = document.createElement('div');
+        el.className = 'suggestion-card';
+        el.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:16px 20px;background:var(--surface);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:border-color .2s;';
+        el.innerHTML = `
+            <div>
+                <div style="font-weight:600;color:var(--text);margin-bottom:4px;">Start at ${start}</div>
+                <div style="font-size:12px;color:var(--text-muted);">Carbon: ${s.avg_carbon.toFixed(1)} gCO₂/kWh · Saves ${s.savings_vs_naive.toFixed(1)} gCO₂/kWh vs now</div>
+                <div style="font-size:11px;color:var(--accent);margin-top:2px;">${data.gpu_scale} GPU${data.gpu_scale > 1 ? 's' : ''} · ${data.energy_kwh.toFixed(1)} kWh</div>
+            </div>
+            <button class="btn btn-primary" style="white-space:nowrap;" onclick="scheduleJob(${data.job_id}, ${idx})">Schedule Here</button>`;
+        el.addEventListener('mouseenter', () => el.style.borderColor = 'var(--accent)');
+        el.addEventListener('mouseleave', () => el.style.borderColor = 'var(--border)');
+        list.appendChild(el);
     });
 }
 
-async function scheduleJob(jobId, windowIndex) {
+window.scheduleJob = async function(jobId, windowIndex) {
     try {
-        const result = await api('/jobs/schedule', {
+        const data = await api('/jobs/schedule', {
             method: 'POST',
             body: JSON.stringify({ job_id: jobId, window_index: windowIndex }),
         });
-        toast(`"${result.name}" scheduled successfully`, 'success');
-        document.getElementById('suggestions-panel').classList.add('hidden');
-        document.getElementById('form-schedule').reset();
-        document.getElementById('schedule-form-card').classList.add('hidden');
-        document.getElementById('btn-open-schedule').innerHTML = '<span>+ Schedule Task</span>';
-        document.getElementById('btn-open-schedule').classList.remove('btn-outline');
-        currentSuggestions = null;
+        toast(`"${data.name}" scheduled — saves ${(data.co2_saved_g || 0).toFixed(1)} gCO₂`, 'success');
+        resetFormAndClose();
         loadJobSchedule();
-    } catch (err) { /* handled */ }
-}
+    } catch (err) { /* toast by api() */ }
+};
 
-// ── Job Schedule Page (merged) ─────────────────────────
+// ── GEAS form toggle ──────────────────────────────────────
+document.getElementById('btn-open-geas').addEventListener('click', () => {
+    const card = document.getElementById('geas-form-card');
+    const btn = document.getElementById('btn-open-geas');
+    if (card.classList.contains('hidden')) {
+        card.classList.remove('hidden');
+        btn.innerHTML = '<span>Cancel</span>';
+        btn.classList.add('btn-danger');
+    } else {
+        card.classList.add('hidden');
+        btn.innerHTML = '<span>+ Submit Task to GEAS</span>';
+        btn.classList.remove('btn-danger');
+    }
+});
+
+// ── GEAS: Submit task ──────────────────────────────────────
+document.getElementById('form-geas').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('btn-submit-geas');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Submitting...';
+    try {
+        const payload = {
+            name: document.getElementById('geas-name').value,
+            task_type: document.getElementById('geas-type').value,
+            command: document.getElementById('geas-command').value,
+        };
+        const earliest = document.getElementById('geas-earliest').value;
+        if (earliest) payload.earliest_start = new Date(earliest).toISOString();
+        const deadline = document.getElementById('geas-deadline').value;
+        if (deadline) payload.deadline = new Date(deadline).toISOString();
+
+        const data = await api('/geas/submit', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+        });
+        toast(`"${data.name}" submitted to GEAS (${data.status})`, 'success');
+        document.getElementById('form-geas').reset();
+        document.getElementById('geas-form-card').classList.add('hidden');
+        document.getElementById('btn-open-geas').innerHTML = '<span>+ Submit Task to GEAS</span>';
+        document.getElementById('btn-open-geas').classList.remove('btn-danger');
+        loadJobSchedule();
+    } catch (err) { /* toast fired by api() */ }
+    finally { btn.disabled = false; btn.innerHTML = '<span>Submit to GEAS</span>'; }
+});
+
+// ── Job Schedule Page ─────────────────────────────────────
 async function loadJobSchedule() {
     const [jobs, stats] = await Promise.all([api('/jobs'), api('/jobs/stats')]);
 
     // KPI metrics
     animateValue(document.getElementById('js-kpi-scheduled'), stats.total_scheduled);
     animateValue(document.getElementById('js-kpi-running'), stats.running_count);
+    animateValue(document.getElementById('js-kpi-queued'), stats.queued_count || 0);
     animateValue(document.getElementById('js-kpi-completed'), stats.completed_count);
-    animateValue(document.getElementById('js-kpi-saved'), stats.total_carbon_saved);
+    animateValue(document.getElementById('js-kpi-saved'), stats.total_carbon_saved || 0);
+
+    // GEAS capacity bar (only relevant in GEAS mode, but update anyway)
+    const capBar = document.getElementById('geas-cap-bar');
+    const capLabel = document.getElementById('geas-cap-label');
+    if (capBar && stats.capacity > 0) {
+        const pct = Math.min(100, Math.round((stats.ti / stats.capacity) * 100));
+        capBar.style.width = pct + '%';
+        capBar.style.background = pct > 80 ? '#ef4444' : pct > 50 ? '#f5a623' : 'var(--accent)';
+    }
+    if (capLabel) capLabel.textContent = `TI ${stats.ti?.toFixed(1) || 0} / ${stats.capacity?.toFixed(1) || 0}`;
+
+    // Update table columns based on mode
+    const thead = document.getElementById('jobs-thead');
+    if (schedulerMode === 'windows') {
+        thead.innerHTML = '<tr><th>ID</th><th>Name</th><th>Priority</th><th>GPUs</th><th>Status</th><th>Mode</th><th>Scheduled</th><th>CO₂ (g)</th><th>Saved (g)</th><th>Actions</th></tr>';
+    } else {
+        thead.innerHTML = '<tr><th>ID</th><th>Name</th><th>Command</th><th>Status</th><th>PID</th><th>CPU</th><th>Carbon</th><th>Saved</th><th>Started</th><th>Actions</th></tr>';
+    }
 
     // Jobs table
     const tbody = document.getElementById('jobs-tbody');
     const empty = document.getElementById('jobs-empty');
     tbody.innerHTML = '';
 
-    if (!jobs.length) { empty.classList.remove('hidden'); return; }
+    // Filter jobs based on mode
+    const filtered = schedulerMode === 'windows'
+        ? jobs.filter(j => !j.command)  // Green Windows jobs have no command
+        : jobs.filter(j => !!j.command); // GEAS jobs have a command
+
+    if (!filtered.length) { empty.classList.remove('hidden'); return; }
     empty.classList.add('hidden');
 
-    jobs.forEach((j, idx) => {
+    const statusColors = {
+        pending: '#888', scheduled: '#3b82f6', queued: '#f5a623', running: '#3b82f6',
+        paused: '#f97316', completed: '#22c55e', failed: '#ef4444',
+    };
+
+    filtered.forEach((j, idx) => {
         const tr = document.createElement('tr');
         tr.style.animation = `fadeSlideIn 0.3s ease ${idx * 50}ms both`;
-        const startStr = j.scheduled_start
-            ? new Date(j.scheduled_start).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-            : '--';
-        tr.innerHTML = `
-            <td>#${j.id}</td><td>${j.name}</td><td>${j.task_type}</td><td>${j.duration_hours}h</td>
-            <td><span class="status-pill status-${j.status}">${j.status}</span></td>
-            <td>${startStr}</td>
-            <td>${j.avg_carbon ? j.avg_carbon.toFixed(1) : '--'}</td>
-            <td style="color:${COLORS.green}">${j.carbon_saved ? j.carbon_saved.toFixed(1) : '--'}</td>
-            <td>${(j.status === 'pending' || j.status === 'scheduled') ? `<button class="btn-remove" onclick="deleteJob(${j.id})">Remove</button>` : ''}</td>`;
+        const canDelete = ['pending', 'scheduled', 'queued', 'paused', 'running'].includes(j.status);
+        const statusStyle = j.status === 'running' ? 'animation:pulse 1.5s infinite' : '';
+
+        if (schedulerMode === 'windows') {
+            const schedStr = j.scheduled_start
+                ? new Date(j.scheduled_start).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
+                : '--';
+            const priorityColor = j.priority_class === 'latency-critical' ? '#ef4444' : j.priority_class === 'flexible' ? '#3b82f6' : '#f5a623';
+            const modeColor = j.run_mode === 'optimized' ? 'var(--accent)' : '#ef4444';
+            const co2Str = j.co2_total_g ? j.co2_total_g.toFixed(1) : '--';
+            const savedStr = j.co2_saved_g ? j.co2_saved_g.toFixed(1) : (j.status === 'completed' ? '0' : '--');
+            tr.innerHTML = `
+                <td>#${j.id}</td>
+                <td>${j.name}</td>
+                <td><span class="priority-pill" style="background:${priorityColor}">${j.priority_class || 'flexible'}</span></td>
+                <td>${j.gpu_scale || 1}</td>
+                <td><span class="status-pill" style="background:${statusColors[j.status] || '#888'};${statusStyle}">${j.status}</span></td>
+                <td><span class="mode-pill" style="background:${modeColor}">${j.run_mode || 'optimized'}</span></td>
+                <td>${schedStr}</td>
+                <td>${co2Str}</td>
+                <td style="color:${COLORS.green}">${savedStr}</td>
+                <td>${canDelete ? `<button class="btn-remove" onclick="deleteJob(${j.id})">Remove</button>` : ''}</td>`;
+        } else {
+            const cmdShort = j.command.length > 36 ? j.command.slice(0, 36) + '...' : j.command;
+            const startStr = j.actual_start
+                ? new Date(j.actual_start).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
+                : '--';
+            tr.innerHTML = `
+                <td>#${j.id}</td>
+                <td>${j.name}</td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted)" title="${j.command}">${cmdShort}</td>
+                <td><span class="status-pill" style="background:${statusColors[j.status] || '#888'};${statusStyle}">${j.status}</span></td>
+                <td style="font-family:'JetBrains Mono',monospace;font-size:12px;">${j.pid || '--'}</td>
+                <td>${j.cpu_intensity ? j.cpu_intensity.toFixed(1) : '--'}</td>
+                <td>${carbonStr}</td>
+                <td style="color:${COLORS.green}">${savedStr}</td>
+                <td>${startStr}</td>
+                <td>${canDelete ? `<button class="btn-remove" onclick="deleteJob(${j.id})">Cancel</button>` : (j.exit_code != null ? 'exit ' + j.exit_code : '')}</td>`;
+        }
         tbody.appendChild(tr);
     });
 }
@@ -1368,6 +1602,171 @@ window.deleteJob = async function(id) {
 };
 
 // ── Impact Page ────────────────────────────────────────
+function drawEmptyChart(canvas, message) {
+    const { ctx, w, h } = setupCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+
+    // Faint grid for visual structure
+    const pad = { top: 20, right: 16, bottom: 44, left: 58 };
+    drawGrid(ctx, w, h, pad);
+
+    // Icon (chart outline)
+    const cx = w / 2, cy = h / 2 - 12;
+    ctx.strokeStyle = COLORS.muted + '40';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 24, cy + 18);
+    ctx.lineTo(cx - 24, cy - 18);
+    ctx.lineTo(cx + 24, cy - 18);
+    ctx.stroke();
+    // Small bar outlines
+    [[-14, 8], [-2, -4], [10, 2]].forEach(([dx, dy]) => {
+        ctx.strokeStyle = COLORS.muted + '30';
+        ctx.strokeRect(cx + dx - 4, cy + dy, 8, 18 - dy);
+    });
+
+    // Message
+    ctx.fillStyle = COLORS.muted;
+    ctx.font = '12px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(message, cx, cy + 40);
+}
+
+/** Horizontal bar chart showing per-job CO₂ savings — styled like the dashboard region bars */
+function drawSavingsBars(canvas, impact) {
+    if (!impact.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+
+    const pad = { top: 24, right: 80, bottom: 10, left: 140 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+    const n = impact.length;
+    const barH = Math.min(32, ch / n - 6);
+    const gap = (ch - barH * n) / (n + 1);
+
+    const maxVal = Math.max(...impact.map(j => j.total_saved)) * 1.15 || 1;
+
+    // Color based on savings magnitude
+    function barColor(saved, maxS) {
+        const t = saved / maxS;
+        if (t > 0.7) return COLORS.green;
+        if (t > 0.4) return COLORS.greenLt;
+        return COLORS.accent;
+    }
+
+    const bars = impact.map((j, i) => {
+        const y = pad.top + gap + i * (barH + gap);
+        const barW = (j.total_saved / maxVal) * cw;
+        const color = barColor(j.total_saved, maxVal / 1.15);
+        return { ...j, x: pad.left, y, barW, barH, color, pct: j.naive_carbon > 0 ? ((j.naive_carbon - j.smart_carbon) / j.naive_carbon * 100).toFixed(1) : '0' };
+    });
+
+    chartRegistry.set(canvas, { type: 'savingsBars', bars, w, h, pad });
+
+    // Animate
+    const duration = 600;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        // Vertical grid lines
+        ctx.strokeStyle = COLORS.grid; ctx.lineWidth = 0.5;
+        for (let i = 0; i <= 4; i++) {
+            const x = pad.left + (i / 4) * cw;
+            ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + ch); ctx.stroke();
+        }
+
+        // Grid value labels at top
+        ctx.fillStyle = COLORS.muted; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'center';
+        for (let i = 0; i <= 4; i++) {
+            const val = Math.round((i / 4) * maxVal);
+            const x = pad.left + (i / 4) * cw;
+            ctx.fillText(val, x, pad.top - 8);
+        }
+
+        bars.forEach(bar => {
+            const animW = bar.barW * eased;
+
+            // Rounded right end
+            const radius = Math.min(5, barH / 2);
+            ctx.beginPath();
+            ctx.moveTo(bar.x, bar.y);
+            ctx.lineTo(bar.x + Math.max(0, animW - radius), bar.y);
+            ctx.arcTo(bar.x + animW, bar.y, bar.x + animW, bar.y + radius, radius);
+            ctx.arcTo(bar.x + animW, bar.y + barH, bar.x + animW - radius, bar.y + barH, radius);
+            ctx.lineTo(bar.x, bar.y + barH);
+            ctx.closePath();
+
+            // Gradient fill (matches region bars)
+            const grad = ctx.createLinearGradient(bar.x, 0, bar.x + bar.barW, 0);
+            grad.addColorStop(0, bar.color + 'cc');
+            grad.addColorStop(1, bar.color);
+            ctx.fillStyle = grad;
+
+            // Glow
+            ctx.shadowColor = bar.color;
+            ctx.shadowBlur = 6;
+            ctx.fill();
+            ctx.shadowColor = 'transparent';
+            ctx.shadowBlur = 0;
+
+            // Job name (left)
+            ctx.fillStyle = COLORS.text; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'right';
+            const lbl = bar.name.length > 16 ? bar.name.slice(0, 16) + '..' : bar.name;
+            ctx.fillText(lbl, pad.left - 10, bar.y + barH / 2 + 4);
+
+            // Value + % label (right of bar)
+            if (progress > 0.5) {
+                ctx.fillStyle = COLORS.text; ctx.font = 'bold 11px Inter, sans-serif'; ctx.textAlign = 'left';
+                ctx.fillText(`${bar.total_saved} gCO\u2082`, bar.x + animW + 8, bar.y + barH / 2 + 1);
+                ctx.fillStyle = COLORS.muted; ctx.font = '9px Inter, sans-serif';
+                ctx.fillText(`\u2193${bar.pct}%`, bar.x + animW + 8, bar.y + barH / 2 + 13);
+            }
+        });
+
+        // Y-axis label
+        ctx.save();
+        ctx.fillStyle = COLORS.muted; ctx.font = 'bold 10px Inter, sans-serif'; ctx.textAlign = 'center';
+        ctx.translate(pad.left + cw / 2, pad.top - 20);
+        ctx.fillText('gCO\u2082 Saved (total per job)', 0, 0);
+        ctx.restore();
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // Hover
+    if (!canvas._hoverAttached) {
+        canvas._hoverAttached = true;
+        canvas.addEventListener('mousemove', e => {
+            const reg = chartRegistry.get(canvas);
+            if (!reg || reg.type !== 'savingsBars') return;
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+
+            const hit = reg.bars.find(b => mx >= b.x && mx <= b.x + b.barW && my >= b.y && my <= b.y + b.barH);
+            if (!hit) { hideTooltip(); return; }
+
+            showTooltip(
+                `<div class="tt-label">${hit.name}</div>` +
+                `<div class="tt-row"><div class="tt-dot" style="background:${hit.color}"></div><span>Saved</span></div>` +
+                `<div class="tt-value">${hit.total_saved} gCO\u2082</div>` +
+                `<div class="tt-row" style="margin-top:4px;font-size:11px;color:${COLORS.muted}">` +
+                `${hit.smart_carbon.toFixed(1)} vs ${hit.naive_carbon.toFixed(1)} gCO\u2082/kWh &middot; ${hit.pct}% reduction</div>`,
+                e.clientX, e.clientY
+            );
+        });
+        canvas.addEventListener('mouseleave', hideTooltip);
+    }
+}
+
 async function loadImpact() {
     const impact = await api('/jobs/impact');
 
@@ -1375,6 +1774,8 @@ async function loadImpact() {
         document.getElementById('impact-total-jobs').textContent = '0';
         document.getElementById('impact-total-saved').textContent = '0';
         document.getElementById('impact-avg-pct').textContent = '0';
+        drawEmptyChart(document.getElementById('chart-comparison'), 'Schedule jobs to see carbon comparison');
+        drawEmptyChart(document.getElementById('chart-savings-bars'), 'Per-job savings will appear here');
         return;
     }
 
@@ -1391,13 +1792,10 @@ async function loadImpact() {
 
     drawGroupedBars(document.getElementById('chart-comparison'),
         impact.map(j => ({ label: j.name, v1: j.naive_carbon, v2: j.smart_carbon })),
-        { colors: [COLORS.red + 'cc', COLORS.green], labels: ['Naive (run now)', 'Smart (GreenQueue)'] }
+        { colors: [COLORS.red, COLORS.green], labels: ['Naive (run now)', 'Smart (GreenQueue)'] }
     );
 
-    drawAreaChart(document.getElementById('chart-cumulative'),
-        impact.map(j => ({ x: j.name.split(' ').slice(0, 2).join(' '), y: j.cumulative_saved })),
-        { color: COLORS.greenLt, showDots: true, xLabel: 'Job', yLabel: 'gCO₂ Saved' }
-    );
+    drawSavingsBars(document.getElementById('chart-savings-bars'), impact);
 }
 
 // ── Auto-refresh every 30s — keeps data fresh as new readings arrive ──

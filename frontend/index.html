@@ -78,12 +78,12 @@
                 <div class="kpi-unit">gCO2/kWh</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">24h Average</div>
+                <div class="kpi-label">Past 24h Average</div>
                 <div class="kpi-value" id="kpi-avg24">--</div>
                 <div class="kpi-unit">gCO2/kWh</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">24h Low</div>
+                <div class="kpi-label">Past 24h Low</div>
                 <div class="kpi-value kpi-green" id="kpi-min24">--</div>
                 <div class="kpi-unit">gCO2/kWh</div>
             </div>
@@ -98,8 +98,8 @@
         <div class="chart-grid two-col">
             <div class="card">
                 <div class="card-header">
-                    <h3>24h Forecast</h3>
-                    <span class="badge badge-info">Actual vs ML Forecast</span>
+                    <h3>Next 24h Forecast</h3>
+                    <span class="badge badge-info">ML Forecast</span>
                 </div>
                 <div class="chart-wrap"><canvas id="chart-forecast"></canvas></div>
             </div>
@@ -137,22 +137,38 @@
         </div>
     </section>
 
-    <!-- ─── Job Schedule Page (merged) ──────────────── -->
+    <!-- ─── Job Schedule Page (dual-mode) ──────────────── -->
     <section id="page-job-schedule" class="page">
         <header class="page-header">
             <h1>Job Schedule</h1>
             <div class="subtitle-wrap"><p class="page-subtitle">Schedule tasks and monitor all compute jobs</p></div>
         </header>
 
+        <!-- Mode toggle -->
+        <div class="mode-toggle" style="margin-bottom:24px;display:flex;gap:0;background:var(--card);border-radius:8px;overflow:hidden;width:fit-content;border:1px solid var(--border);">
+            <button class="mode-btn active" data-mode="windows" id="mode-btn-windows"
+                    style="padding:10px 24px;border:none;cursor:pointer;font-weight:600;font-size:13px;transition:all .2s;background:var(--accent);color:#fff;">
+                Green Windows
+            </button>
+            <button class="mode-btn" data-mode="geas" id="mode-btn-geas"
+                    style="padding:10px 24px;border:none;cursor:pointer;font-weight:600;font-size:13px;transition:all .2s;background:transparent;color:var(--text-muted);">
+                GEAS (Live Process)
+            </button>
+        </div>
+
         <!-- KPI metrics row -->
         <div class="kpi-row">
             <div class="kpi-card">
-                <div class="kpi-label">Total Scheduled</div>
+                <div class="kpi-label">Total Jobs</div>
                 <div class="kpi-value" id="js-kpi-scheduled">--</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-label">Currently Running</div>
+                <div class="kpi-label">Running</div>
                 <div class="kpi-value kpi-accent" id="js-kpi-running">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Queued / Paused</div>
+                <div class="kpi-value" id="js-kpi-queued" style="color:#f5a623">--</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-label">Completed</div>
@@ -161,59 +177,166 @@
             <div class="kpi-card">
                 <div class="kpi-label">Carbon Saved</div>
                 <div class="kpi-value kpi-green" id="js-kpi-saved">--</div>
-                <div class="kpi-unit">gCO2 total</div>
+                <div class="kpi-unit">gCO₂ total</div>
             </div>
         </div>
 
-        <!-- Schedule task toggle button -->
-        <button class="btn btn-primary" id="btn-open-schedule" style="margin-bottom:24px;">
-            <span>+ Schedule Task</span>
-        </button>
+        <!-- GEAS live status bar (hidden in windows mode) -->
+        <div class="card geas-only" id="geas-cap-card" style="margin-bottom:24px;padding:16px 24px;">
+            <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+                <span style="color:var(--text-muted);font-size:13px;">GEAS Capacity</span>
+                <div style="flex:1;min-width:200px;height:8px;background:var(--card);border-radius:4px;overflow:hidden;">
+                    <div id="geas-cap-bar" style="height:100%;background:var(--accent);border-radius:4px;transition:width .5s ease;width:0%"></div>
+                </div>
+                <span id="geas-cap-label" style="font-size:13px;color:var(--text-muted)">TI 0 / 0</span>
+            </div>
+        </div>
 
-        <!-- Schedule form (full width, hidden by default) -->
-        <div class="card hidden" id="schedule-form-card" style="margin-bottom:24px;">
-            <div class="card-header"><h3>Schedule a New Task</h3></div>
-            <div style="padding:24px;">
-                <form id="form-schedule">
-                    <div class="form-group">
-                        <label for="job-name">Task Name</label>
-                        <input type="text" id="job-name" placeholder="e.g. Train ML Model" required />
-                    </div>
-                    <div class="form-row">
+        <!-- ═══ GREEN WINDOWS MODE ═══ -->
+        <div id="windows-panel">
+            <button class="btn btn-primary" id="btn-open-windows" style="margin-bottom:24px;">
+                <span>+ Schedule a Job</span>
+            </button>
+
+            <div class="card hidden" id="windows-form-card" style="margin-bottom:24px;">
+                <div class="card-header"><h3>Configure &amp; Schedule Job</h3></div>
+                <div style="padding:24px;">
+                    <form id="form-windows">
+                        <!-- Row 1: Name + Workload Type -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="win-name">Job Name</label>
+                                <input type="text" id="win-name" placeholder="e.g. Train ResNet-50" required />
+                            </div>
+                            <div class="form-group">
+                                <label for="win-type">Workload Type</label>
+                                <select id="win-type">
+                                    <option value="ml_training">ML Training</option>
+                                    <option value="inference">Inference</option>
+                                    <option value="data_pipeline">Data Pipeline</option>
+                                    <option value="simulation">Simulation</option>
+                                    <option value="general">General Compute</option>
+                                </select>
+                            </div>
+                        </div>
+                        <!-- Row 2: Priority + Flexibility -->
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="win-priority">Priority Class</label>
+                                <select id="win-priority">
+                                    <option value="latency-critical">Latency-Critical (run now, best region)</option>
+                                    <option value="flexible" selected>Flexible (find green window + region)</option>
+                                    <option value="batch">Batch (greenest in next 24h)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="win-flexibility">I can wait up to (hours)</label>
+                                <input type="number" id="win-flexibility" min="1" max="24" value="6" required />
+                            </div>
+                        </div>
+                        <!-- Row 3: GPU Scale -->
                         <div class="form-group">
-                            <label for="job-type">Task Type</label>
-                            <select id="job-type">
-                                <option value="compute">Compute</option>
-                                <option value="data">Data Pipeline</option>
-                                <option value="general">General</option>
-                            </select>
+                            <label for="win-gpu-scale">Datacentre Scale Simulation</label>
+                            <div class="gpu-scale-wrap">
+                                <input type="range" id="win-gpu-range" min="1" max="1000" value="1" class="gpu-slider" />
+                                <div class="gpu-scale-info">
+                                    <input type="number" id="win-gpu-scale" min="1" max="1000" value="1" class="gpu-input" />
+                                    <span class="gpu-unit">GPUs</span>
+                                </div>
+                            </div>
+                            <div class="gpu-energy-preview" id="gpu-energy-preview">
+                                Est. energy: <strong>0.6 kWh</strong> · Est. CO₂ at current intensity: <strong>-- g</strong>
+                            </div>
+                        </div>
+                        <!-- Row 4: Demo File Upload -->
+                        <div class="form-group">
+                            <label for="win-demo-file">Demo Task (optional file)</label>
+                            <div class="file-upload-wrap">
+                                <input type="file" id="win-demo-file" class="file-input" />
+                                <div class="file-label" id="file-label">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                    <span>Choose file or drag &amp; drop</span>
+                                </div>
+                                <span class="file-name" id="file-name"></span>
+                            </div>
+                        </div>
+                        <!-- Action buttons -->
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" id="btn-find-windows">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                <span>Schedule Optimally</span>
+                            </button>
+                            <button type="button" class="btn btn-outline" id="btn-run-now">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                <span>Run Immediately</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Suggestions panel (shown after "Schedule Optimally") -->
+            <div class="card hidden" id="suggestions-card" style="margin-bottom:24px;">
+                <div class="card-header"><h3>Recommended Green Windows</h3></div>
+                <div id="brown-warning" class="hidden" style="padding:12px 24px 0;"></div>
+                <div id="suggestions-list" style="padding:24px;display:flex;flex-direction:column;gap:12px;"></div>
+            </div>
+        </div>
+
+        <!-- ═══ GEAS MODE ═══ -->
+        <div id="geas-panel" class="hidden">
+            <button class="btn btn-primary" id="btn-open-geas" style="margin-bottom:24px;">
+                <span>+ Submit Task to GEAS</span>
+            </button>
+
+            <div class="card hidden" id="geas-form-card" style="margin-bottom:24px;">
+                <div class="card-header"><h3>Submit a New Task</h3></div>
+                <div style="padding:24px;">
+                    <form id="form-geas">
+                        <div class="form-group">
+                            <label for="geas-name">Task Name</label>
+                            <input type="text" id="geas-name" placeholder="e.g. Train ML Model" required />
                         </div>
                         <div class="form-group">
-                            <label for="job-duration">Duration (hours)</label>
-                            <input type="number" id="job-duration" min="1" max="8" value="1" />
+                            <label for="geas-command">Shell Command</label>
+                            <input type="text" id="geas-command" placeholder='e.g. python train.py --epochs 50' required
+                                   style="font-family:'JetBrains Mono',monospace;font-size:13px;" />
                         </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary" id="btn-suggest">
-                        <span>Find Green Windows</span>
-                    </button>
-                </form>
-
-                <div id="suggestions-panel" class="suggestions-panel hidden" style="margin-top:20px;">
-                    <h3>Recommended Windows</h3>
-                    <div id="suggestions-list"></div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="geas-type">Task Type</label>
+                                <select id="geas-type">
+                                    <option value="compute">Compute</option>
+                                    <option value="data">Data Pipeline</option>
+                                    <option value="general">General</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="geas-earliest">Earliest Start (optional)</label>
+                                <input type="datetime-local" id="geas-earliest" />
+                            </div>
+                            <div class="form-group">
+                                <label for="geas-deadline">Deadline (optional)</label>
+                                <input type="datetime-local" id="geas-deadline" />
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="btn-submit-geas">
+                            <span>Submit to GEAS</span>
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>
 
-        <!-- Jobs table -->
+        <!-- Jobs table (shared — columns differ per mode) -->
         <div class="card">
             <div class="card-header"><h3>Job Queue</h3></div>
-            <div id="jobs-table-wrap">
+            <div id="jobs-table-wrap" style="overflow-x:auto;">
                 <table class="jobs-table">
-                    <thead>
+                    <thead id="jobs-thead">
                         <tr>
-                            <th>ID</th><th>Name</th><th>Type</th><th>Duration</th>
-                            <th>Status</th><th>Scheduled</th><th>Carbon</th><th>Saved</th><th>Actions</th>
+                            <th>ID</th><th>Name</th><th>Priority</th><th>GPUs</th>
+                            <th>Status</th><th>Mode</th><th>Scheduled</th><th>CO₂ (g)</th><th>Saved (g)</th><th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="jobs-tbody"></tbody>
@@ -255,8 +378,8 @@
                 <div class="chart-wrap"><canvas id="chart-comparison"></canvas></div>
             </div>
             <div class="card">
-                <div class="card-header"><h3>Cumulative Savings</h3></div>
-                <div class="chart-wrap"><canvas id="chart-cumulative"></canvas></div>
+                <div class="card-header"><h3>Per-Job CO₂ Savings</h3></div>
+                <div class="chart-wrap"><canvas id="chart-savings-bars"></canvas></div>
             </div>
         </div>
     </section>
