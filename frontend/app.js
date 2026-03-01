@@ -1,189 +1,940 @@
-/**
- * app.js — Frontend logic for GreenQueue dashboard.
- *
- * Uses vanilla JS + Canvas API for charts (no libraries needed).
- * Talks to the FastAPI backend at /api/*.
- */
+/* ================================================================
+   GreenQueue — Interactive Frontend
+   Intro animation · Hover tooltips · Chart entry animations
+   ================================================================ */
 
-const API = "";  // same origin, no prefix needed
+const API = '/api';
 
-// ---------------------------------------------------------------------------
-// Fetch current grid status
-// ---------------------------------------------------------------------------
-async function fetchCurrent() {
-  try {
-    const res = await fetch(`${API}/api/energy/current`);
-    const data = await res.json();
+/* ══════════════════════════════════════════════════════
+   1. INTRO TYPING ANIMATION
+   ══════════════════════════════════════════════════════ */
+(function introAnimation() {
+    const overlay = document.getElementById('intro-overlay');
+    if (!overlay) return;
 
-    const el = document.getElementById("current-intensity");
-    el.textContent = data.carbon_intensity;
+    // Skip if already seen this page load (only via flag, not sessionStorage)
+    if (window._introPlayed) {
+        overlay.classList.add('hidden');
+        initApp();
+        return;
+    }
 
-    // Color-code based on intensity
-    el.className = "big-number";
-    if (data.carbon_intensity < 200) el.classList.add("intensity-low");
-    else if (data.carbon_intensity < 350) el.classList.add("intensity-medium");
-    else el.classList.add("intensity-high");
+    const titleEl = document.getElementById('intro-title');
+    const subEl   = document.getElementById('intro-subtitle');
+    const text    = 'GreenQueue';
+    let i = 0;
 
-    // Energy mix chips
-    const mixEl = document.getElementById("energy-mix");
-    const sources = [
-      ["☀️ Solar", data.solar_pct],
-      ["💨 Wind", data.wind_pct],
-      ["🔥 Gas", data.gas_pct],
-      ["🪨 Coal", data.coal_pct],
-      ["⚛️ Nuclear", data.nuclear_pct],
-      ["💧 Hydro", data.hydro_pct],
-    ];
-    mixEl.innerHTML = sources
-      .map(([label, val]) =>
-        `<div class="mix-item"><span class="label">${label}</span> <span class="value">${val.toFixed(1)}%</span></div>`
-      )
-      .join("");
-  } catch (err) {
-    console.error("Failed to fetch current energy:", err);
-  }
+    // Create a cursor span
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+
+    titleEl.textContent = '';
+    titleEl.appendChild(cursor);
+
+    function typeNext() {
+        if (i < text.length) {
+            titleEl.insertBefore(document.createTextNode(text[i]), cursor);
+            i++;
+            setTimeout(typeNext, 110);
+        } else {
+            // Typing done — show subtitle
+            setTimeout(() => subEl.classList.add('visible'), 200);
+            // Fade out overlay
+            setTimeout(() => {
+                cursor.style.display = 'none';
+                overlay.classList.add('fade-out');
+                window._introPlayed = true;
+                setTimeout(() => {
+                    overlay.classList.add('hidden');
+                    initApp();
+                }, 700);
+            }, 1600);
+        }
+    }
+
+    setTimeout(typeNext, 400);
+})();
+
+
+/* ══════════════════════════════════════════════════════
+   2. TOOLTIP SYSTEM
+   ══════════════════════════════════════════════════════ */
+const tooltipEl = document.getElementById('chart-tooltip');
+
+function showTooltip(html, x, y) {
+    tooltipEl.innerHTML = html;
+    tooltipEl.classList.add('visible');
+    // Position — keep on screen
+    const tw = tooltipEl.offsetWidth;
+    const th = tooltipEl.offsetHeight;
+    let tx = x + 14;
+    let ty = y - th / 2;
+    if (tx + tw > window.innerWidth - 12) tx = x - tw - 14;
+    if (ty < 8) ty = 8;
+    if (ty + th > window.innerHeight - 8) ty = window.innerHeight - th - 8;
+    tooltipEl.style.left = tx + 'px';
+    tooltipEl.style.top = ty + 'px';
 }
 
-// ---------------------------------------------------------------------------
-// Fetch and draw 24h forecast
-// ---------------------------------------------------------------------------
-async function fetchForecast() {
-  const status = document.getElementById("forecast-status");
-  status.textContent = "Loading forecast...";
-
-  try {
-    const res = await fetch(`${API}/api/forecast/next24h`);
-    const data = await res.json();
-    status.textContent = `Showing ${data.length} hourly predictions`;
-    drawChart("forecast-chart", data.map(d => ({
-      label: new Date(d.timestamp).getHours() + ":00",
-      value: d.carbon_intensity,
-    })));
-  } catch (err) {
-    status.textContent = "Error loading forecast. Train the model first?";
-    console.error(err);
-  }
+function hideTooltip() {
+    tooltipEl.classList.remove('visible');
 }
 
-// ---------------------------------------------------------------------------
-// Train model
-// ---------------------------------------------------------------------------
-async function trainModel() {
-  const status = document.getElementById("forecast-status");
-  status.textContent = "Training model...";
+/* ══════════════════════════════════════════════════════
+   3. CHART REGISTRY (stores point data for hit-testing)
+   ══════════════════════════════════════════════════════ */
+const chartRegistry = new Map(); // canvas -> { type, data, ... }
 
-  try {
-    const res = await fetch(`${API}/api/forecast/train`, { method: "POST" });
-    const data = await res.json();
-    status.textContent = `Trained on ${data.rows_used} rows — MAE: ${data.mae} gCO₂/kWh`;
-  } catch (err) {
-    status.textContent = "Training failed.";
-    console.error(err);
-  }
+
+/* ══════════════════════════════════════════════════════
+   4. CORE APP LOGIC
+   ══════════════════════════════════════════════════════ */
+function initApp() {
+    loadDashboard();
 }
 
-// ---------------------------------------------------------------------------
-// Fetch and draw history chart
-// ---------------------------------------------------------------------------
-async function fetchHistory() {
-  try {
-    const res = await fetch(`${API}/api/energy/history?limit=168`);
-    const data = await res.json();
-    // data comes newest-first, reverse it for the chart
-    const reversed = data.reverse();
-    drawChart("history-chart", reversed.map(d => ({
-      label: new Date(d.timestamp).toLocaleDateString("en", { weekday: "short", hour: "numeric" }),
-      value: d.carbon_intensity,
-    })));
-  } catch (err) {
-    console.error("Failed to fetch history:", err);
-  }
+// ── Navigation ─────────────────────────────────────────
+document.querySelectorAll('.nav-link').forEach(link => {
+    link.addEventListener('click', e => {
+        e.preventDefault();
+        showPage(link.dataset.page);
+    });
+});
+
+function showPage(name) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    const pageEl = document.getElementById(`page-${name}`);
+    const linkEl = document.querySelector(`.nav-link[data-page="${name}"]`);
+    if (pageEl) pageEl.classList.add('active');
+    if (linkEl) linkEl.classList.add('active');
+    if (name === 'dashboard') loadDashboard();
+    else if (name === 'jobs') loadJobs();
+    else if (name === 'impact') loadImpact();
 }
 
-// ---------------------------------------------------------------------------
-// Simple canvas bar/line chart (no libraries needed)
-// ---------------------------------------------------------------------------
-function drawChart(canvasId, points) {
-  const canvas = document.getElementById(canvasId);
-  const ctx = canvas.getContext("2d");
-
-  // High-DPI support
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-
-  const W = rect.width;
-  const H = rect.height;
-  const PAD = { top: 20, right: 20, bottom: 40, left: 50 };
-  const plotW = W - PAD.left - PAD.right;
-  const plotH = H - PAD.top - PAD.bottom;
-
-  const values = points.map(p => p.value);
-  const minVal = Math.min(...values) * 0.9;
-  const maxVal = Math.max(...values) * 1.1;
-
-  // Clear
-  ctx.clearRect(0, 0, W, H);
-
-  // Y-axis labels
-  ctx.fillStyle = "#64748b";
-  ctx.font = "11px sans-serif";
-  ctx.textAlign = "right";
-  for (let i = 0; i <= 4; i++) {
-    const val = minVal + (maxVal - minVal) * (i / 4);
-    const y = PAD.top + plotH - (plotH * (i / 4));
-    ctx.fillText(Math.round(val), PAD.left - 8, y + 4);
-    // Grid line
-    ctx.strokeStyle = "#1e293b";
-    ctx.beginPath();
-    ctx.moveTo(PAD.left, y);
-    ctx.lineTo(W - PAD.right, y);
-    ctx.stroke();
-  }
-
-  // Draw filled area + line
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = PAD.left + (i / (points.length - 1)) * plotW;
-    const y = PAD.top + plotH - ((p.value - minVal) / (maxVal - minVal)) * plotH;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-
-  // Fill under the line
-  const lastX = PAD.left + plotW;
-  ctx.lineTo(lastX, PAD.top + plotH);
-  ctx.lineTo(PAD.left, PAD.top + plotH);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(74, 222, 128, 0.15)";
-  ctx.fill();
-
-  // Draw the line itself
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = PAD.left + (i / (points.length - 1)) * plotW;
-    const y = PAD.top + plotH - ((p.value - minVal) / (maxVal - minVal)) * plotH;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.strokeStyle = "#4ade80";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-
-  // X-axis labels (show every Nth)
-  const step = Math.max(1, Math.floor(points.length / 8));
-  ctx.fillStyle = "#64748b";
-  ctx.textAlign = "center";
-  ctx.font = "10px sans-serif";
-  for (let i = 0; i < points.length; i += step) {
-    const x = PAD.left + (i / (points.length - 1)) * plotW;
-    ctx.fillText(points[i].label, x, H - PAD.bottom + 20);
-  }
+// ── Toast ──────────────────────────────────────────────
+function toast(msg, type = 'info') {
+    const c = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = msg;
+    c.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
 }
 
-// ---------------------------------------------------------------------------
-// Load current data on page load
-// ---------------------------------------------------------------------------
-fetchCurrent();
+// ── API Helper ─────────────────────────────────────────
+async function api(path, opts = {}) {
+    try {
+        const res = await fetch(`${API}${path}`, {
+            headers: { 'Content-Type': 'application/json' }, ...opts,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    } catch (err) {
+        toast(`Request failed: ${err.message}`, 'error');
+        throw err;
+    }
+}
+
+// ── Animated Number Counter ────────────────────────────
+function animateValue(el, end, duration = 600, suffix = '') {
+    const start = parseFloat(el.textContent) || 0;
+    if (start === end) { el.textContent = end + suffix; return; }
+    const t0 = performance.now();
+    function step(now) {
+        const p = Math.min((now - t0) / duration, 1);
+        const e = 1 - Math.pow(1 - p, 3);
+        el.textContent = (Math.round((start + (end - start) * e) * 10) / 10) + suffix;
+        if (p < 1) requestAnimationFrame(step);
+        else { el.textContent = end + suffix; el.classList.add('count-animate'); setTimeout(() => el.classList.remove('count-animate'), 300); }
+    }
+    requestAnimationFrame(step);
+}
+
+
+/* ══════════════════════════════════════════════════════
+   5. CANVAS HELPERS
+   ══════════════════════════════════════════════════════ */
+const COLORS = {
+    green: '#10b981', greenLt: '#34d399', accent: '#6366f1', accentLt: '#818cf8',
+    red: '#f87171', amber: '#fbbf24', blue: '#60a5fa', text: '#e2e8f0',
+    muted: '#5a6e8f', grid: '#1e293b', surface: '#1a2234',
+};
+
+function setupCanvas(canvas) {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    return { ctx, w: rect.width, h: rect.height };
+}
+
+function drawGrid(ctx, w, h, pad, rows = 4) {
+    ctx.strokeStyle = COLORS.grid; ctx.lineWidth = 0.5;
+    for (let i = 0; i <= rows; i++) {
+        const y = pad.top + (i / rows) * (h - pad.top - pad.bottom);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+    }
+}
+
+function roundedRect(ctx, x, y, w, h, r) {
+    if (h <= 0) return;
+    r = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+}
+
+
+/* ══════════════════════════════════════════════════════
+   6. ANIMATED AREA/LINE CHART (with hover)
+   ══════════════════════════════════════════════════════ */
+function drawAreaChart(canvas, data, { color = COLORS.green, label = '', showDots = false } = {}) {
+    if (!data.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const pad = { top: 28, right: 16, bottom: 36, left: 52 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+
+    const maxVal = Math.max(...data.map(d => d.y)) * 1.1 || 1;
+    const minVal = Math.min(0, Math.min(...data.map(d => d.y)));
+
+    // Build points array
+    const points = data.map((d, i) => ({
+        px: pad.left + (i / Math.max(data.length - 1, 1)) * cw,
+        py: pad.top + (1 - (d.y - minVal) / (maxVal - minVal)) * ch,
+        x: d.x, y: d.y,
+    }));
+
+    // Register for tooltip
+    chartRegistry.set(canvas, { type: 'area', points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots });
+
+    // Animate: progressive reveal left-to-right
+    const duration = 800;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const clipX = pad.left + cw * eased;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        drawGrid(ctx, w, h, pad);
+
+        // Y-axis labels
+        ctx.fillStyle = COLORS.muted; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        for (let i = 0; i <= 4; i++) {
+            const val = minVal + (maxVal - minVal) * (1 - i / 4);
+            ctx.fillText(Math.round(val), pad.left - 8, pad.top + (i / 4) * ch + 3);
+        }
+        // X-axis labels
+        ctx.textAlign = 'center';
+        const step = Math.max(1, Math.floor(data.length / 8));
+        for (let i = 0; i < data.length; i += step) {
+            const x = pad.left + (i / Math.max(data.length - 1, 1)) * cw;
+            if (x <= clipX) ctx.fillText(data[i].x || '', x, h - 8);
+        }
+
+        // Clip to animated region
+        ctx.beginPath();
+        ctx.rect(0, 0, clipX, h);
+        ctx.clip();
+
+        // Fill area
+        ctx.beginPath();
+        ctx.moveTo(points[0].px, points[0].py);
+        for (let i = 1; i < points.length; i++) {
+            const xc = (points[i - 1].px + points[i].px) / 2;
+            const yc = (points[i - 1].py + points[i].py) / 2;
+            ctx.quadraticCurveTo(points[i - 1].px, points[i - 1].py, xc, yc);
+        }
+        ctx.lineTo(points[points.length - 1].px, points[points.length - 1].py);
+        ctx.lineTo(points[points.length - 1].px, pad.top + ch);
+        ctx.lineTo(points[0].px, pad.top + ch);
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
+        grad.addColorStop(0, color + '30');
+        grad.addColorStop(1, color + '05');
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Line
+        ctx.beginPath();
+        ctx.moveTo(points[0].px, points[0].py);
+        for (let i = 1; i < points.length; i++) {
+            const xc = (points[i - 1].px + points[i].px) / 2;
+            const yc = (points[i - 1].py + points[i].py) / 2;
+            ctx.quadraticCurveTo(points[i - 1].px, points[i - 1].py, xc, yc);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Dots
+        if (showDots) {
+            points.forEach(p => {
+                if (p.px > clipX) return;
+                ctx.beginPath(); ctx.arc(p.px, p.py, 3.5, 0, Math.PI * 2);
+                ctx.fillStyle = color; ctx.fill();
+                ctx.strokeStyle = COLORS.surface; ctx.lineWidth = 1.5; ctx.stroke();
+            });
+        }
+
+        // Label
+        if (label) { ctx.fillStyle = COLORS.text; ctx.font = 'bold 11px Inter, sans-serif'; ctx.textAlign = 'left'; ctx.fillText(label, pad.left, 14); }
+
+        ctx.restore();
+
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // Attach hover listener (once)
+    attachAreaHover(canvas);
+}
+
+function attachAreaHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'area') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+
+        // Find closest point
+        let closest = null, minDist = Infinity;
+        for (const p of reg.points) {
+            const d = Math.abs(p.px - mx);
+            if (d < minDist) { minDist = d; closest = p; }
+        }
+        if (!closest || minDist > 40) { hideTooltip(); redrawAreaStatic(canvas); return; }
+
+        // Redraw with crosshair + highlighted dot
+        redrawAreaStatic(canvas);
+        const ctx = canvas.getContext('2d');
+        ctx.save();
+
+        // Vertical crosshair
+        ctx.strokeStyle = COLORS.muted + '60'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(closest.px, reg.pad.top); ctx.lineTo(closest.px, reg.pad.top + reg.ch); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Highlight dot
+        ctx.beginPath(); ctx.arc(closest.px, closest.py, 5, 0, Math.PI * 2);
+        ctx.fillStyle = reg.color; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+
+        ctx.restore();
+
+        showTooltip(
+            `<div class="tt-label">${closest.x}</div><div class="tt-value" style="color:${reg.color}">${closest.y.toFixed(1)} gCO2/kWh</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        hideTooltip();
+        redrawAreaStatic(canvas);
+    });
+}
+
+/** Redraw area chart without animation (for hover updates) */
+function redrawAreaStatic(canvas) {
+    const reg = chartRegistry.get(canvas);
+    if (!reg || reg.type !== 'area') return;
+    const { points, color, pad, cw, ch, w, h, maxVal, minVal, label, showDots } = reg;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+
+    drawGrid(ctx, w, h, pad);
+
+    ctx.fillStyle = COLORS.muted; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const val = minVal + (maxVal - minVal) * (1 - i / 4);
+        ctx.fillText(Math.round(val), pad.left - 8, pad.top + (i / 4) * ch + 3);
+    }
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(points.length / 8));
+    for (let i = 0; i < points.length; i += step) {
+        ctx.fillText(points[i].x || '', points[i].px, h - 8);
+    }
+
+    // Fill
+    ctx.beginPath(); ctx.moveTo(points[0].px, points[0].py);
+    for (let i = 1; i < points.length; i++) {
+        const xc = (points[i - 1].px + points[i].px) / 2;
+        const yc = (points[i - 1].py + points[i].py) / 2;
+        ctx.quadraticCurveTo(points[i - 1].px, points[i - 1].py, xc, yc);
+    }
+    ctx.lineTo(points[points.length - 1].px, points[points.length - 1].py);
+    ctx.lineTo(points[points.length - 1].px, pad.top + ch);
+    ctx.lineTo(points[0].px, pad.top + ch);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ch);
+    grad.addColorStop(0, color + '30'); grad.addColorStop(1, color + '05');
+    ctx.fillStyle = grad; ctx.fill();
+
+    // Line
+    ctx.beginPath(); ctx.moveTo(points[0].px, points[0].py);
+    for (let i = 1; i < points.length; i++) {
+        const xc = (points[i - 1].px + points[i].px) / 2;
+        const yc = (points[i - 1].py + points[i].py) / 2;
+        ctx.quadraticCurveTo(points[i - 1].px, points[i - 1].py, xc, yc);
+    }
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+
+    if (showDots) {
+        points.forEach(p => {
+            ctx.beginPath(); ctx.arc(p.px, p.py, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = color; ctx.fill();
+            ctx.strokeStyle = COLORS.surface; ctx.lineWidth = 1.5; ctx.stroke();
+        });
+    }
+    if (label) { ctx.fillStyle = COLORS.text; ctx.font = 'bold 11px Inter, sans-serif'; ctx.textAlign = 'left'; ctx.fillText(label, pad.left, 14); }
+    ctx.restore();
+}
+
+
+/* ══════════════════════════════════════════════════════
+   7. ANIMATED DONUT CHART (with hover)
+   ══════════════════════════════════════════════════════ */
+function drawDonut(canvas, segments) {
+    if (!segments.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const cx = w * 0.4, cy = h / 2;
+    const outer = Math.min(cx, cy) - 20;
+    const inner = outer * 0.6;
+    const total = segments.reduce((s, seg) => s + seg.value, 0) || 1;
+
+    // Pre-calculate angles
+    let cum = -Math.PI / 2;
+    const arcs = segments.map(seg => {
+        const start = cum;
+        const sweep = (seg.value / total) * Math.PI * 2;
+        cum += sweep;
+        return { ...seg, startAngle: start, endAngle: start + sweep };
+    });
+
+    chartRegistry.set(canvas, { type: 'donut', arcs, cx, cy, outer, inner, total, w, h });
+
+    // Animate: sweep from 0 to full
+    const duration = 700;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const sweepLimit = eased * Math.PI * 2;
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        let cumAngle = -Math.PI / 2;
+        arcs.forEach(arc => {
+            const sweep = (arc.value / total) * Math.PI * 2;
+            const visibleSweep = Math.min(sweep, Math.max(0, sweepLimit - (cumAngle + Math.PI / 2)));
+            if (visibleSweep <= 0) { cumAngle += sweep; return; }
+
+            ctx.beginPath();
+            ctx.arc(cx, cy, outer, cumAngle, cumAngle + visibleSweep);
+            ctx.arc(cx, cy, inner, cumAngle + visibleSweep, cumAngle, true);
+            ctx.closePath();
+            ctx.fillStyle = arc.color;
+            ctx.fill();
+            cumAngle += sweep;
+        });
+
+        // Center text (always)
+        ctx.fillStyle = COLORS.text; ctx.font = 'bold 20px Inter, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(total.toFixed(0) + '%', cx, cy - 6);
+        ctx.font = '10px Inter, sans-serif'; ctx.fillStyle = COLORS.muted;
+        ctx.fillText('Total', cx, cy + 12);
+
+        // Legend
+        const legendX = w * 0.7;
+        let legendY = 24;
+        ctx.textAlign = 'left';
+        arcs.forEach(arc => {
+            ctx.fillStyle = arc.color;
+            ctx.fillRect(legendX, legendY, 10, 10);
+            ctx.fillStyle = COLORS.text; ctx.font = '11px Inter, sans-serif';
+            ctx.fillText(`${arc.label} ${arc.value.toFixed(1)}%`, legendX + 16, legendY + 9);
+            legendY += 22;
+        });
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    attachDonutHover(canvas);
+}
+
+function attachDonutHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'donut') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const dx = mx - reg.cx, dy = my - reg.cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < reg.inner || dist > reg.outer) { hideTooltip(); return; }
+
+        let angle = Math.atan2(dy, dx);
+        if (angle < -Math.PI / 2) angle += Math.PI * 2;
+
+        const hit = reg.arcs.find(a => angle >= a.startAngle && angle < a.endAngle);
+        if (!hit) { hideTooltip(); return; }
+
+        showTooltip(
+            `<div class="tt-row"><div class="tt-dot" style="background:${hit.color}"></div><span>${hit.label}</span></div><div class="tt-value">${hit.value.toFixed(1)}%</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', hideTooltip);
+}
+
+
+/* ══════════════════════════════════════════════════════
+   8. ANIMATED GROUPED BAR CHART (with hover)
+   ══════════════════════════════════════════════════════ */
+function drawGroupedBars(canvas, data, { colors = [COLORS.accent, COLORS.green], labels = ['Naive', 'Smart'] } = {}) {
+    if (!data.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const pad = { top: 36, right: 16, bottom: 36, left: 52 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+    const maxVal = Math.max(...data.flatMap(d => [d.v1, d.v2])) * 1.15 || 1;
+    const n = data.length;
+    const groupW = cw / n;
+    const barW = groupW * 0.3;
+    const gap = groupW * 0.1;
+
+    // Pre-calculate bar positions
+    const bars = [];
+    data.forEach((d, i) => {
+        const gx = pad.left + i * groupW + groupW / 2;
+        bars.push(
+            { x: gx - barW - gap / 2, fullH: (d.v1 / maxVal) * ch, color: colors[0] + 'aa', label: d.label, value: d.v1, group: labels[0] },
+            { x: gx + gap / 2,        fullH: (d.v2 / maxVal) * ch, color: colors[1],        label: d.label, value: d.v2, group: labels[1] }
+        );
+    });
+
+    chartRegistry.set(canvas, { type: 'bars', bars, barW, pad, ch, cw, w, h, maxVal, colors, labels, data });
+
+    // Animate: bars grow from bottom
+    const duration = 700;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        drawGrid(ctx, w, h, pad);
+
+        // Y labels
+        ctx.fillStyle = COLORS.muted; ctx.font = '10px Inter, sans-serif'; ctx.textAlign = 'right';
+        for (let i = 0; i <= 4; i++) {
+            ctx.fillText(Math.round(maxVal * (1 - i / 4)), pad.left - 8, pad.top + (i / 4) * ch + 3);
+        }
+
+        bars.forEach(b => {
+            const bh = b.fullH * eased;
+            ctx.fillStyle = b.color;
+            ctx.beginPath();
+            roundedRect(ctx, b.x, pad.top + ch - bh, barW, bh, 3);
+            ctx.fill();
+        });
+
+        // X labels
+        ctx.fillStyle = COLORS.muted; ctx.font = '9px Inter, sans-serif'; ctx.textAlign = 'center';
+        data.forEach((d, i) => {
+            const gx = pad.left + i * groupW + groupW / 2;
+            const lbl = d.label.length > 10 ? d.label.slice(0, 10) + '..' : d.label;
+            ctx.fillText(lbl, gx, h - 8);
+        });
+
+        // Legend
+        ctx.font = 'bold 10px Inter, sans-serif';
+        labels.forEach((lbl, i) => {
+            const lx = pad.left + i * 120;
+            ctx.fillStyle = colors[i]; ctx.fillRect(lx, 10, 10, 10);
+            ctx.fillStyle = COLORS.text; ctx.fillText(lbl, lx + 14, 19);
+        });
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    attachBarHover(canvas);
+}
+
+function attachBarHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'bars') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const hit = reg.bars.find(b => mx >= b.x && mx <= b.x + reg.barW && my >= reg.pad.top + reg.ch - b.fullH && my <= reg.pad.top + reg.ch);
+
+        if (!hit) { hideTooltip(); return; }
+
+        showTooltip(
+            `<div class="tt-label">${hit.label}</div><div class="tt-row"><div class="tt-dot" style="background:${hit.color}"></div><span>${hit.group}</span></div><div class="tt-value">${hit.value.toFixed(1)} gCO2/kWh</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', hideTooltip);
+}
+
+
+/* ══════════════════════════════════════════════════════
+   9. ANIMATED HEATMAP (with hover)
+   ══════════════════════════════════════════════════════ */
+function drawHeatmap(canvas, data) {
+    if (!data.length) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const pad = { top: 28, right: 16, bottom: 28, left: 42 };
+    const cw = w - pad.left - pad.right;
+    const ch = h - pad.top - pad.bottom;
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const cellW = cw / 24;
+    const cellH = ch / 7;
+    const vals = data.map(d => d.avg_carbon).filter(v => v > 0);
+    const minC = Math.min(...vals);
+    const maxC = Math.max(...vals);
+
+    // Pre-compute cell colors and positions
+    const cells = data.filter(d => d.avg_carbon > 0).map(d => {
+        const t = (d.avg_carbon - minC) / (maxC - minC || 1);
+        const r = Math.round(16 + t * 230);
+        const g = Math.round(185 - t * 85);
+        const b = Math.round(129 - t * 80);
+        return {
+            x: pad.left + d.hour * cellW,
+            y: pad.top + d.day * cellH,
+            w: cellW, h: cellH,
+            color: `rgb(${r},${g},${b})`,
+            day: days[d.day], hour: d.hour, value: d.avg_carbon,
+        };
+    });
+
+    chartRegistry.set(canvas, { type: 'heatmap', cells, pad, cw, ch, w, h, cellW, cellH, days });
+
+    // Animate: fade in cells with stagger
+    const duration = 600;
+    const t0 = performance.now();
+
+    function frame(now) {
+        const progress = Math.min((now - t0) / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 2);
+
+        ctx.clearRect(0, 0, w, h);
+        ctx.save();
+
+        cells.forEach((c, idx) => {
+            // Stagger: each cell has a slight delay based on position
+            const cellDelay = ((c.x - pad.left) / cw) * 0.3 + ((c.y - pad.top) / ch) * 0.3;
+            const cellProgress = Math.max(0, Math.min(1, (eased - cellDelay) / (1 - 0.6)));
+            if (cellProgress <= 0) return;
+
+            ctx.globalAlpha = cellProgress;
+            ctx.fillStyle = c.color;
+            const scale = 0.5 + cellProgress * 0.5;
+            const cx = c.x + cellW / 2;
+            const cy = c.y + cellH / 2;
+            const sw = (cellW - 2) * scale;
+            const sh = (cellH - 2) * scale;
+            ctx.beginPath();
+            roundedRect(ctx, cx - sw / 2, cy - sh / 2, sw, sh, 2);
+            ctx.fill();
+        });
+
+        ctx.globalAlpha = 1;
+
+        // Day labels
+        ctx.fillStyle = COLORS.muted; ctx.font = '9px Inter, sans-serif'; ctx.textAlign = 'right';
+        days.forEach((d, i) => {
+            ctx.fillText(d, pad.left - 6, pad.top + i * cellH + cellH / 2 + 3);
+        });
+
+        // Hour labels
+        ctx.textAlign = 'center';
+        for (let hr = 0; hr < 24; hr += 3) {
+            ctx.fillText(hr + ':00', pad.left + hr * cellW + cellW / 2, pad.top + ch + 16);
+        }
+
+        ctx.restore();
+        if (progress < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    attachHeatmapHover(canvas);
+}
+
+function attachHeatmapHover(canvas) {
+    if (canvas._hoverAttached) return;
+    canvas._hoverAttached = true;
+
+    canvas.addEventListener('mousemove', e => {
+        const reg = chartRegistry.get(canvas);
+        if (!reg || reg.type !== 'heatmap') return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const hit = reg.cells.find(c => mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h);
+        if (!hit) { hideTooltip(); return; }
+
+        showTooltip(
+            `<div class="tt-label">${hit.day} at ${hit.hour}:00</div><div class="tt-value" style="color:${hit.color}">${hit.value.toFixed(1)} gCO2/kWh</div>`,
+            e.clientX, e.clientY
+        );
+    });
+
+    canvas.addEventListener('mouseleave', hideTooltip);
+}
+
+
+/* ══════════════════════════════════════════════════════
+   10. PAGE LOADERS
+   ══════════════════════════════════════════════════════ */
+
+// ── Dashboard ──────────────────────────────────────────
+async function loadDashboard() {
+    const [current, stats, forecast, history, heatmap, jobStats] = await Promise.all([
+        api('/energy/current'),
+        api('/energy/stats'),
+        api('/forecast/next24h').catch(() => []),
+        api('/energy/history?limit=168'),
+        api('/energy/heatmap'),
+        api('/jobs/stats'),
+    ]);
+
+    animateValue(document.getElementById('kpi-current'), Math.round(current.carbon_intensity));
+    animateValue(document.getElementById('kpi-avg24'), stats.last_24h.avg);
+    animateValue(document.getElementById('kpi-min24'), stats.last_24h.min);
+    animateValue(document.getElementById('kpi-saved'), jobStats.total_carbon_saved);
+
+    if (forecast.length) {
+        const fData = forecast.map(f => ({
+            x: new Date(f.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            y: f.carbon_intensity,
+        }));
+        drawAreaChart(document.getElementById('chart-forecast'), fData, { color: COLORS.green, label: 'Predicted gCO2/kWh' });
+    }
+
+    const sourceSegments = [
+        { label: 'Solar',   value: current.solar_pct || 0,   color: '#fbbf24' },
+        { label: 'Wind',    value: current.wind_pct || 0,    color: '#60a5fa' },
+        { label: 'Gas',     value: current.gas_pct || 0,     color: '#f87171' },
+        { label: 'Nuclear', value: current.nuclear_pct || 0, color: '#a78bfa' },
+        { label: 'Hydro',   value: current.hydro_pct || 0,   color: '#34d399' },
+        { label: 'Coal',    value: current.coal_pct || 0,    color: '#94a3b8' },
+    ].filter(s => s.value > 0);
+    drawDonut(document.getElementById('chart-sources'), sourceSegments);
+
+    if (history.length) {
+        const hData = history.reverse().map(h => ({
+            x: new Date(h.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }),
+            y: h.carbon_intensity,
+        }));
+        const step = Math.max(1, Math.floor(hData.length / 72));
+        const sampled = hData.filter((_, i) => i % step === 0);
+        drawAreaChart(document.getElementById('chart-history'), sampled, { color: COLORS.accent, label: 'gCO2/kWh over time' });
+    }
+
+    if (heatmap.length) drawHeatmap(document.getElementById('chart-heatmap'), heatmap);
+}
+
+// ── Schedule Page ──────────────────────────────────────
+let currentSuggestions = null;
+
+document.getElementById('form-schedule').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = document.getElementById('btn-suggest');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+    try {
+        const data = await api('/jobs/suggest', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: document.getElementById('job-name').value,
+                task_type: document.getElementById('job-type').value,
+                duration_hours: parseInt(document.getElementById('job-duration').value),
+            }),
+        });
+        currentSuggestions = data;
+        renderSuggestions(data);
+        toast('Green windows found', 'success');
+    } catch (err) { /* toast fired */ }
+    finally { btn.disabled = false; btn.innerHTML = '<span>Find Green Windows</span>'; }
+});
+
+function renderSuggestions(data) {
+    const panel = document.getElementById('suggestions-panel');
+    const list = document.getElementById('suggestions-list');
+    panel.classList.remove('hidden');
+    list.innerHTML = '';
+
+    if (!data.suggestions.length) {
+        list.innerHTML = '<p class="empty-state">No forecast available. Train the ML model first.</p>';
+        return;
+    }
+
+    data.suggestions.forEach((s, idx) => {
+        const start = new Date(s.start);
+        const end = new Date(s.end);
+        const timeStr = `${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        const dateStr = start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+        const card = document.createElement('div');
+        card.className = 'suggestion-card';
+        card.style.animationDelay = (idx * 120) + 'ms';
+        card.innerHTML = `
+            <div class="suggestion-rank">${idx === 0 ? 'Best Window' : 'Option ' + (idx + 1)}</div>
+            <div class="suggestion-time">${dateStr} ${timeStr}</div>
+            <div class="suggestion-stats">
+                <span>${s.avg_carbon.toFixed(1)} gCO2/kWh</span>
+                <span class="stat-good">Saves ${s.savings_vs_naive.toFixed(1)} gCO2/kWh vs now</span>
+            </div>`;
+        card.addEventListener('click', () => scheduleJob(data.job_id, idx));
+        list.appendChild(card);
+    });
+}
+
+async function scheduleJob(jobId, windowIndex) {
+    try {
+        const result = await api('/jobs/schedule', {
+            method: 'POST',
+            body: JSON.stringify({ job_id: jobId, window_index: windowIndex }),
+        });
+        toast(`"${result.name}" scheduled successfully`, 'success');
+        document.getElementById('suggestions-panel').classList.add('hidden');
+        document.getElementById('form-schedule').reset();
+        currentSuggestions = null;
+    } catch (err) { /* handled */ }
+}
+
+// ── Jobs Page ──────────────────────────────────────────
+async function loadJobs() {
+    const [jobs, stats] = await Promise.all([api('/jobs'), api('/jobs/stats')]);
+
+    document.getElementById('jobs-stats-row').innerHTML = `
+        <div class="jobs-stat-card">
+            <div class="jobs-stat-label">Total Scheduled</div>
+            <div class="jobs-stat-value">${stats.total_scheduled}</div>
+        </div>
+        <div class="jobs-stat-card">
+            <div class="jobs-stat-label">Currently Running</div>
+            <div class="jobs-stat-value" style="color:${COLORS.amber}">${stats.running_count}</div>
+        </div>
+        <div class="jobs-stat-card">
+            <div class="jobs-stat-label">Completed</div>
+            <div class="jobs-stat-value" style="color:${COLORS.green}">${stats.completed_count}</div>
+        </div>`;
+
+    const tbody = document.getElementById('jobs-tbody');
+    const empty = document.getElementById('jobs-empty');
+    tbody.innerHTML = '';
+
+    if (!jobs.length) { empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+
+    jobs.forEach((j, idx) => {
+        const tr = document.createElement('tr');
+        tr.style.animation = `fadeSlideIn 0.3s ease ${idx * 50}ms both`;
+        const startStr = j.scheduled_start
+            ? new Date(j.scheduled_start).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : '--';
+        tr.innerHTML = `
+            <td>#${j.id}</td><td>${j.name}</td><td>${j.task_type}</td><td>${j.duration_hours}h</td>
+            <td><span class="status-pill status-${j.status}">${j.status}</span></td>
+            <td>${startStr}</td>
+            <td>${j.avg_carbon ? j.avg_carbon.toFixed(1) : '--'}</td>
+            <td style="color:${COLORS.green}">${j.carbon_saved ? j.carbon_saved.toFixed(1) : '--'}</td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+// ── Impact Page ────────────────────────────────────────
+async function loadImpact() {
+    const impact = await api('/jobs/impact');
+
+    if (!impact.length) {
+        document.getElementById('impact-total-jobs').textContent = '0';
+        document.getElementById('impact-total-saved').textContent = '0';
+        document.getElementById('impact-avg-pct').textContent = '0';
+        return;
+    }
+
+    const totalJobs = impact.length;
+    const totalSaved = impact[impact.length - 1].cumulative_saved;
+    const avgPct = impact.reduce((sum, j) => {
+        if (j.naive_carbon > 0) return sum + ((j.naive_carbon - j.smart_carbon) / j.naive_carbon) * 100;
+        return sum;
+    }, 0) / totalJobs;
+
+    animateValue(document.getElementById('impact-total-jobs'), totalJobs);
+    animateValue(document.getElementById('impact-total-saved'), totalSaved);
+    animateValue(document.getElementById('impact-avg-pct'), Math.round(avgPct));
+
+    drawGroupedBars(document.getElementById('chart-comparison'),
+        impact.map(j => ({ label: j.name, v1: j.naive_carbon, v2: j.smart_carbon })),
+        { colors: [COLORS.red + 'cc', COLORS.green], labels: ['Naive (run now)', 'Smart (GreenQueue)'] }
+    );
+
+    drawAreaChart(document.getElementById('chart-cumulative'),
+        impact.map(j => ({ x: j.name.split(' ').slice(0, 2).join(' '), y: j.cumulative_saved })),
+        { color: COLORS.greenLt, label: 'Cumulative gCO2 saved', showDots: true }
+    );
+}
+
+// ── Demo Seed ──────────────────────────────────────────
+document.getElementById('btn-demo-seed').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-demo-seed');
+    btn.disabled = true; btn.textContent = 'Seeding...';
+    try {
+        const r = await api('/demo/seed', { method: 'POST' });
+        toast(`Created ${r.created} demo jobs`, 'success');
+        const pg = document.querySelector('.page.active')?.id?.replace('page-', '');
+        if (pg) showPage(pg);
+    } catch (err) { /* handled */ }
+    finally { btn.disabled = false; btn.textContent = 'Seed Demo Data'; }
+});
+
+// ── Auto-refresh ───────────────────────────────────────
+setInterval(() => {
+    const pg = document.querySelector('.page.active')?.id?.replace('page-', '');
+    if (pg === 'dashboard') loadDashboard();
+}, 60000);

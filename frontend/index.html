@@ -1,46 +1,239 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GreenQueue — Smart Job Scheduler</title>
-  <link rel="stylesheet" href="/static/style.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GreenQueue — Smart Carbon-Aware Job Scheduler</title>
+    <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <h1>⚡ GreenQueue</h1>
-    <p class="subtitle">Green-energy-aware AI job scheduler</p>
-  </header>
 
-  <main>
-    <!-- Current grid status -->
-    <section class="card" id="current-card">
-      <h2>Current Grid Status</h2>
-      <div class="big-number" id="current-intensity">—</div>
-      <div class="unit">gCO₂/kWh</div>
-      <div class="energy-mix" id="energy-mix"></div>
-      <button onclick="fetchCurrent()">Refresh</button>
+<!-- ── Intro Animation Overlay ────────────────────── -->
+<div id="intro-overlay">
+    <div class="intro-content">
+        <div class="intro-title" id="intro-title"></div>
+        <div class="intro-subtitle" id="intro-subtitle">Carbon-Aware AI Job Scheduler</div>
+    </div>
+</div>
+
+<!-- ── Chart Tooltip ────────────────────────────────── -->
+<div id="chart-tooltip" class="chart-tooltip"></div>
+
+<!-- ── Sidebar Navigation ───────────────────────────── -->
+<nav id="sidebar">
+    <div class="sidebar-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+        </svg>
+        <span>GreenQueue</span>
+    </div>
+
+    <ul class="nav-links">
+        <li>
+            <a href="#" class="nav-link active" data-page="dashboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                <span>Dashboard</span>
+            </a>
+        </li>
+        <li>
+            <a href="#" class="nav-link" data-page="schedule">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span>Schedule</span>
+            </a>
+        </li>
+        <li>
+            <a href="#" class="nav-link" data-page="jobs">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>
+                <span>Jobs</span>
+            </a>
+        </li>
+        <li>
+            <a href="#" class="nav-link" data-page="impact">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                <span>Impact</span>
+            </a>
+        </li>
+    </ul>
+
+    <div class="sidebar-footer">
+        <button id="btn-demo-seed" class="btn btn-outline btn-sm">Seed Demo Data</button>
+        <div class="sidebar-meta">CheeseHacks 2026</div>
+    </div>
+</nav>
+
+<!-- ── Main Content ─────────────────────────────────── -->
+<main id="content">
+
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
+    <!-- ─── Dashboard Page ─────────────────────────── -->
+    <section id="page-dashboard" class="page active">
+        <header class="page-header">
+            <h1>Dashboard</h1>
+            <p class="page-subtitle">Real-time grid carbon intensity and energy mix overview</p>
+        </header>
+
+        <!-- KPI row -->
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-label">Current Intensity</div>
+                <div class="kpi-value" id="kpi-current">--</div>
+                <div class="kpi-unit">gCO2/kWh</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">24h Average</div>
+                <div class="kpi-value" id="kpi-avg24">--</div>
+                <div class="kpi-unit">gCO2/kWh</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">24h Low</div>
+                <div class="kpi-value kpi-green" id="kpi-min24">--</div>
+                <div class="kpi-unit">gCO2/kWh</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Carbon Saved</div>
+                <div class="kpi-value kpi-accent" id="kpi-saved">--</div>
+                <div class="kpi-unit">gCO2 total</div>
+            </div>
+        </div>
+
+        <!-- Charts row 1 -->
+        <div class="chart-grid two-col">
+            <div class="card">
+                <div class="card-header">
+                    <h3>24h Forecast</h3>
+                    <span class="badge badge-info">ML Model</span>
+                </div>
+                <div class="chart-wrap"><canvas id="chart-forecast"></canvas></div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3>Energy Sources</h3>
+                    <span class="badge badge-neutral">Current Mix</span>
+                </div>
+                <div class="chart-wrap"><canvas id="chart-sources"></canvas></div>
+            </div>
+        </div>
+
+        <!-- Charts row 2 -->
+        <div class="chart-grid two-col">
+            <div class="card">
+                <div class="card-header"><h3>Historical Trend</h3></div>
+                <div class="chart-wrap"><canvas id="chart-history"></canvas></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>Intensity Heatmap</h3><span class="badge badge-neutral">Hour x Day</span></div>
+                <div class="chart-wrap"><canvas id="chart-heatmap"></canvas></div>
+            </div>
+        </div>
     </section>
 
-    <!-- 24h Forecast -->
-    <section class="card" id="forecast-card">
-      <h2>24-Hour Forecast</h2>
-      <canvas id="forecast-chart" width="700" height="300"></canvas>
-      <div class="actions">
-        <button onclick="fetchForecast()">Load Forecast</button>
-        <button onclick="trainModel()">Re-train Model</button>
-      </div>
-      <p id="forecast-status" class="status"></p>
+    <!-- ─── Schedule Page ──────────────────────────── -->
+    <section id="page-schedule" class="page">
+        <header class="page-header">
+            <h1>Schedule a Task</h1>
+            <p class="page-subtitle">Submit a job to find the greenest execution window</p>
+        </header>
+
+        <div class="schedule-layout">
+            <div class="card schedule-form-card">
+                <form id="form-schedule">
+                    <div class="form-group">
+                        <label for="job-name">Task Name</label>
+                        <input type="text" id="job-name" placeholder="e.g. Train ML Model" required />
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="job-type">Task Type</label>
+                            <select id="job-type">
+                                <option value="compute">Compute</option>
+                                <option value="data">Data Pipeline</option>
+                                <option value="general">General</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="job-duration">Duration (hours)</label>
+                            <input type="number" id="job-duration" min="1" max="8" value="1" />
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="btn-suggest">
+                        <span>Find Green Windows</span>
+                    </button>
+                </form>
+            </div>
+
+            <div id="suggestions-panel" class="suggestions-panel hidden">
+                <h3>Recommended Windows</h3>
+                <div id="suggestions-list"></div>
+            </div>
+        </div>
     </section>
 
-    <!-- History -->
-    <section class="card" id="history-card">
-      <h2>Recent History (7 days)</h2>
-      <canvas id="history-chart" width="700" height="300"></canvas>
-      <button onclick="fetchHistory()">Load History</button>
-    </section>
-  </main>
+    <!-- ─── Jobs Page ──────────────────────────────── -->
+    <section id="page-jobs" class="page">
+        <header class="page-header">
+            <h1>Job Queue</h1>
+            <p class="page-subtitle">Manage and monitor all scheduled compute jobs</p>
+        </header>
 
-  <script src="/static/app.js"></script>
+        <div class="jobs-stats-row" id="jobs-stats-row"></div>
+        <div class="card">
+            <div id="jobs-table-wrap">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th><th>Name</th><th>Type</th><th>Duration</th>
+                            <th>Status</th><th>Scheduled</th><th>Carbon</th><th>Saved</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobs-tbody"></tbody>
+                </table>
+                <div id="jobs-empty" class="empty-state hidden">
+                    <p>No jobs yet. Schedule your first task to get started.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ─── Impact Page ────────────────────────────── -->
+    <section id="page-impact" class="page">
+        <header class="page-header">
+            <h1>Environmental Impact</h1>
+            <p class="page-subtitle">Compare smart scheduling versus immediate execution</p>
+        </header>
+
+        <div class="kpi-row">
+            <div class="kpi-card">
+                <div class="kpi-label">Total Jobs Optimized</div>
+                <div class="kpi-value" id="impact-total-jobs">--</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Cumulative CO2 Saved</div>
+                <div class="kpi-value kpi-green" id="impact-total-saved">--</div>
+                <div class="kpi-unit">gCO2</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Avg Reduction</div>
+                <div class="kpi-value kpi-accent" id="impact-avg-pct">--</div>
+                <div class="kpi-unit">% per job</div>
+            </div>
+        </div>
+
+        <div class="chart-grid two-col">
+            <div class="card">
+                <div class="card-header"><h3>Smart vs Naive Carbon</h3></div>
+                <div class="chart-wrap"><canvas id="chart-comparison"></canvas></div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3>Cumulative Savings</h3></div>
+                <div class="chart-wrap"><canvas id="chart-cumulative"></canvas></div>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<script src="/static/app.js"></script>
 </body>
 </html>
