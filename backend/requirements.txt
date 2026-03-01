@@ -1,0 +1,30 @@
+# ===========================================
+# GreenQueue — Python Dependencies
+# ===========================================
+
+# --- Web framework & server ---
+fastapi>=0.110           # REST API framework
+uvicorn>=0.27            # ASGI server to run FastAPI
+
+# --- Data validation ---
+pydantic>=2.6            # Request/response models
+pydantic-settings>=2.1   # Settings management from .env
+
+# --- Database ---
+sqlalchemy>=2.0          # ORM for database access
+aiosqlite>=0.20          # Async SQLite driver (used by SQLAlchemy)
+greenlet>=3.0            # Required by SQLAlchemy for async support
+
+# --- HTTP client (for calling external APIs) ---
+httpx>=0.27              # Async HTTP requests
+
+# --- Job scheduling ---
+apscheduler>=3.10        # Schedule & run jobs at specific times
+
+# --- Data science / ML ---
+pandas>=2.2              # Data manipulation
+numpy>=1.26              # Numerical operations
+scikit-learn>=1.4        # ML utilities & models
+
+# --- Environment variables ---
+python-dotenv>=1.0       # Load .env files
