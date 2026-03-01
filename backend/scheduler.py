@@ -6,31 +6,31 @@ scheduler.py — Finds the greenest time window for a job using ML forecasts,
 from model import predict_next_24h
 
 
-def suggest_green_windows(duration_hours: int = 1, zone: str = "US-CAL-CISO") -> list[dict]:
+def suggest_green_windows(horizon_hours: int = 6, zone: str = "US-CAL-CISO") -> list[dict]:
     """
-    Slide a window across the next 24h forecast and return the top 3
-    greenest (lowest avg carbon) windows. Also computes naive_carbon —
-    what the intensity would be if you ran the job right now.
+    Search the next `horizon_hours` of forecast for the single greenest
+    hour to start the job.  Returns top 3 one-hour slots with savings
+    info. `horizon_hours` = how long the user is willing to wait.
     """
     forecast = predict_next_24h(zone)
 
-    if duration_hours > len(forecast):
-        duration_hours = len(forecast)
+    # Clamp horizon to available forecast length
+    horizon = min(horizon_hours, len(forecast))
+    if horizon < 1:
+        horizon = 1
 
-    # "Naive" carbon = avg intensity of the FIRST window (run immediately)
-    naive_hours = forecast[:duration_hours]
-    naive_avg = sum(h["carbon_intensity"] for h in naive_hours) / len(naive_hours)
+    # "Naive" carbon = intensity if run right now (first hour)
+    naive_avg = forecast[0]["carbon_intensity"]
 
-    # Slide a window of size `duration_hours` across the 24 predictions
+    # Evaluate each hour within the horizon as a candidate start time
     windows = []
-    for i in range(len(forecast) - duration_hours + 1):
-        window_hours = forecast[i : i + duration_hours]
-        avg = sum(h["carbon_intensity"] for h in window_hours) / len(window_hours)
+    for i in range(horizon):
+        h = forecast[i]
         windows.append({
-            "start": window_hours[0]["timestamp"],
-            "end": window_hours[-1]["timestamp"],
-            "avg_carbon": round(avg, 1),
-            "hours": window_hours,
+            "start": h["timestamp"],
+            "end": h["timestamp"],
+            "avg_carbon": round(h["carbon_intensity"], 1),
+            "hours": [h],
         })
 
     # Sort by average carbon (lowest = greenest)

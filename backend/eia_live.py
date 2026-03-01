@@ -54,7 +54,7 @@ async def fetch_latest_eia_readings(hours_back: int = 6) -> list[dict]:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(EIA_BASE_URL, params=params)
             resp.raise_for_status()
             data = resp.json()

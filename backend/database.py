@@ -56,13 +56,28 @@ class Job(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String)                          # e.g. "Train ResNet"
     task_type: Mapped[str] = mapped_column(String, default="general")  # compute / data / general
+    command: Mapped[str] = mapped_column(String, default="")           # shell command to execute
     duration_hours: Mapped[int] = mapped_column(Integer, default=1)    # estimated runtime in hours
-    status: Mapped[str] = mapped_column(String, default="pending")     # pending / scheduled / running / completed
+    priority_class: Mapped[str] = mapped_column(String, default="flexible")  # latency-critical / flexible / batch
+    gpu_scale: Mapped[int] = mapped_column(Integer, default=1)         # 1-1000 GPU scale for datacenter simulation
+    demo_file: Mapped[str] = mapped_column(String, default="")         # uploaded demo task filename
+    run_mode: Mapped[str] = mapped_column(String, default="optimized") # optimized / immediate
+    earliest_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # earliest acceptable start
+    deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # latest acceptable start
+    status: Mapped[str] = mapped_column(String, default="pending")     # pending / queued / running / paused / completed / failed
     scheduled_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     scheduled_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    actual_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     avg_carbon: Mapped[float] = mapped_column(Float, default=0.0)         # avg predicted intensity during window
     naive_carbon: Mapped[float] = mapped_column(Float, default=0.0)       # what carbon would be if run immediately
-    carbon_saved: Mapped[float] = mapped_column(Float, default=0.0)       # gCO2 saved vs naive
+    carbon_saved: Mapped[float] = mapped_column(Float, default=0.0)       # gCO2 saved vs naive (per kWh)
+    energy_kwh: Mapped[float] = mapped_column(Float, default=0.0)         # estimated energy usage based on GPU scale
+    co2_total_g: Mapped[float] = mapped_column(Float, default=0.0)        # total CO2 at smart window (grams)
+    co2_naive_g: Mapped[float] = mapped_column(Float, default=0.0)        # total CO2 if run immediately (grams)
+    co2_saved_g: Mapped[float] = mapped_column(Float, default=0.0)        # total CO2 saved (grams)
+    cpu_intensity: Mapped[float] = mapped_column(Float, default=0.0)      # EWMA of measured CPU (0-10)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)       # OS process ID when running
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True) # process exit code
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

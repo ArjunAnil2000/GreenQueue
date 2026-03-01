@@ -274,3 +274,42 @@ async def ingest_current_reading():
         "timestamp": current_hour.isoformat(),
         "carbon_intensity": carbon["carbonIntensity"],
     }
+
+
+async def backfill_eia_history(days: int = 10):
+    """
+    One-time startup backfill: fetch `days` worth of hourly readings from
+    the EIA API and insert any that are missing from the DB.
+    This gives the Historical Trend and Heatmap charts enough data.
+    """
+    if DATA_SOURCE != "real":
+        return
+
+    from eia_live import fetch_latest_eia_readings
+
+    hours = days * 24
+    print(f"[backfill] Fetching up to {hours} hours ({days} days) of EIA history…")
+
+    readings = await fetch_latest_eia_readings(hours_back=hours)
+    if not readings:
+        print("[backfill] No readings returned from EIA API.")
+        return
+
+    inserted = 0
+    async with async_session() as db:
+        for rd in readings:
+            exists = await db.execute(
+                select(EIAReading.id).where(
+                    EIAReading.timestamp == rd["timestamp"],
+                    EIAReading.zone == rd["zone"],
+                )
+            )
+            if exists.scalar_one_or_none() is not None:
+                continue
+            db.add(EIAReading(**rd))
+            inserted += 1
+
+        if inserted > 0:
+            await db.commit()
+
+    print(f"[backfill] Inserted {inserted} new readings (fetched {len(readings)} total).")
