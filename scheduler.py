@@ -1,39 +1,40 @@
 import os
 import signal
 import time
+import sys
 import subprocess
 import psutil
 import threading
 import shlex
+import sqlite3
+import datetime
+import argparse
 from collections import deque
 
 class Task:
-    def __init__(self, name, cmd, initial_i=1.0):
+    def __init__(self, name, cmd, initial_i=1.0, job_id=None):
         self.name = name
         self.cmd = cmd
         self.pid = None
-        self.proc = None  # Holds the psutil.Process object
-        self.popen = None # Holds the subprocess.Popen object (NEW)
+        self.proc = None
+        self.popen = None
         self.i = initial_i
         self.is_running = False
+        # job_id determines if this task syncs back to the DB. 
+        # CLI tasks default to None and are ignored by DB sync.
+        self.job_id = job_id 
 
     def start(self):
         if self.pid is None:
-            # First time starting — use a new session so we can signal the
-            # whole process tree (parent + children) with a single kill().
             self.popen = subprocess.Popen(
-                shlex.split(self.cmd),   # no shell=True; avoids orphaned children
-                start_new_session=True,  # os.setsid — gives us a process group
+                shlex.split(self.cmd),
+                start_new_session=True,
             )
             self.pid = self.popen.pid
             self.proc = psutil.Process(self.pid)
-            # Prime cpu_percent for the parent *and* give children a moment
-            # to spawn so they can be primed too.
             self.proc.cpu_percent(interval=None)
         else:
-            # Resuming from a paused state — resume the ENTIRE process group
             os.killpg(os.getpgid(self.pid), signal.SIGCONT)
-            # Re-prime all processes after resume
             self.proc.cpu_percent(interval=None)
             for child in self.proc.children(recursive=True):
                 try:
@@ -42,17 +43,16 @@ class Task:
                     pass
 
         self.is_running = True
-        print(f"[START/RESUME] Task {self.name} (PID: {self.pid})")
+        print(f"[START/RESUME] Task {self.name} (PID: {self.pid}) | Command: {self.cmd}")
 
     def pause(self):
         if self.pid and self.is_running:
-            # Stop the ENTIRE process group so child workers stop too
             os.killpg(os.getpgid(self.pid), signal.SIGSTOP)
             self.is_running = False
             print(f"[PAUSE] Task {self.name} (PID: {self.pid}) stopped. I={self.i:.2f}")
 
 class GEASScheduler:
-    def __init__(self, k=1.0, alpha=0.7):
+    def __init__(self, db_path=None, k=1.0, alpha=0.7, zone='US-CAL-CISO'):
         self.k = k
         self.alpha = alpha
         self.queue = deque()
@@ -60,13 +60,16 @@ class GEASScheduler:
         self.current_gi = 10.0
         self.ti = 0.0
         self.num_cores = psutil.cpu_count(logical=True)
-        
-        # Add a Threading Lock to prevent race conditions
         self.lock = threading.Lock()
+        
+        self.db_path = db_path
+        self.last_fetched_hour = None
+        self.zone = zone
+        self.pending_completions = set()
 
     def submit_task(self, task):
         with self.lock:
-            print(f"[SUBMIT] New task added to queue: {task.name}")
+            print(f"[SUBMIT] New task added to queue: {task.name} | Command: {task.cmd}")
             self.queue.append(task)
 
     def update_gi(self, new_gi):
@@ -74,78 +77,151 @@ class GEASScheduler:
             print(f"\n[GI UPDATE] Greenness Index changed from {self.current_gi} to {new_gi}")
             self.current_gi = new_gi
 
-    def measure_actual_intensiveness(self, task):
-        """
-        Measures the CPU utilization of the entire process tree
-        (parent + child workers) using a single timed window, then
-        maps to a 0-10 scale.
-        """
-        if not task.is_running or task.proc is None:
-            return 0.0
+    def try_fetch_gi(self):
+        if not self.db_path:
+            return False
+        now = datetime.datetime.now()
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        if self.last_fetched_hour == current_hour:
+            return True
+
+        target_timestamp = current_hour.strftime('%Y-%m-%d %H:00:00.000000')
+        thirty_days_ago = (current_hour - datetime.timedelta(days=30)).strftime('%Y-%m-%d %H:00:00.000000')
 
         try:
-            # 1. Snapshot cpu_percent for parent AND all children at once
-            #    (non-blocking "prime" call that records the starting point)
+            conn = sqlite3.connect(self.db_path, timeout=1.0)
+            cursor = conn.cursor()
+            
+            cursor.execute(
+                "SELECT carbon_intensity FROM carbon_readings WHERE timestamp = ? AND zone = ?",
+                (target_timestamp, self.zone)
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False
+            
+            current_carbon = row[0]
+            cursor.execute(
+                "SELECT MIN(carbon_intensity), MAX(carbon_intensity) FROM carbon_readings WHERE timestamp >= ? AND zone = ?",
+                (thirty_days_ago, self.zone)
+            )
+            min_carbon, max_carbon = cursor.fetchone()
+            conn.close()
+
+            if min_carbon is None or max_carbon is None:
+                min_carbon, max_carbon = current_carbon, current_carbon
+            
+            if max_carbon == min_carbon:
+                gi = 5.0
+            else:
+                clamped = max(min_carbon, min(current_carbon, max_carbon))
+                ratio = (clamped - min_carbon) / (max_carbon - min_carbon)
+                gi = (1.0 - ratio) * 10.0
+            
+            self.update_gi(round(gi, 2))
+            self.last_fetched_hour = current_hour
+            print(f"[DB] Fetched GI: {round(gi, 2)} for zone {self.zone}")
+            return True
+        except Exception:
+            return False
+
+    def sync_db_jobs(self):
+        if not self.db_path:
+            return
+
+        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=1.0)
+            cursor = conn.cursor()
+            
+            # 1. Flush DB jobs that have completed.
+            if self.pending_completions:
+                for jid in list(self.pending_completions):
+                    cursor.execute(
+                        "UPDATE jobs SET status = 'completed', completed_at = ? WHERE id = ?",
+                        (now_str, jid)
+                    )
+                conn.commit()
+                self.pending_completions.clear()
+                print("[DB] Successfully flushed completed jobs to database.")
+            
+            # 2. Poll for new scheduled jobs
+            cursor.execute(
+                "SELECT id, name, command FROM jobs WHERE status = 'scheduled' AND scheduled_start <= ?",
+                (now_str,)
+            )
+            jobs = cursor.fetchall()
+            
+            for job in jobs:
+                job_id, name, command_str = job
+                
+                # Mark as queued to prevent duplicate fetching
+                cursor.execute("UPDATE jobs SET status = 'queued' WHERE id = ?", (job_id,))
+                conn.commit()
+                
+                # Ensure we have a fallback if the command is somehow empty in the DB
+                actual_cmd = command_str if command_str else f"echo 'Warning: Empty command in DB for job {job_id}'"
+                
+                print(f"[DB] Job '{name}' (ID: {job_id}) scheduled start arrived.")
+                new_task = Task(name=f"{name}_#{job_id}", cmd=actual_cmd, job_id=job_id)
+                self.submit_task(new_task)
+
+            conn.close()
+        except sqlite3.OperationalError as e:
+            print(f"[DB] Locked during job sync: {e}. Retrying next minute...")
+        except Exception as e:
+            print(f"[DB] Error syncing jobs: {e}")
+
+    def measure_actual_intensiveness(self, task):
+        if not task.is_running or task.proc is None:
+            return 0.0
+        try:
             all_procs = [task.proc]
             for child in task.proc.children(recursive=True):
                 try:
-                    child.cpu_percent(interval=None)   # prime each child
+                    child.cpu_percent(interval=None)
                     all_procs.append(child)
                 except psutil.NoSuchProcess:
                     pass
-            task.proc.cpu_percent(interval=None)       # prime the parent
-
-            # 2. Wait once for the measurement window
+            task.proc.cpu_percent(interval=None)
             time.sleep(5)
-
-            # 3. Collect cpu_percent from every process (non-blocking now)
             total_raw_cpu = 0.0
             for p in all_procs:
-                try:
-                    pct = p.cpu_percent(interval=None)
-                    total_raw_cpu += pct
-                except psutil.NoSuchProcess:
-                    pass
-
-            print(f"  [{task.name}] total raw cpu={total_raw_cpu:.1f}%  "
-                  f"(procs measured: {len(all_procs)})")
-
-            # 4. Map to 0-10 scale  (total_raw_cpu is in per-core %;
-            #    e.g. 200% for 2 fully-loaded cores)
+                try: total_raw_cpu += p.cpu_percent(interval=None)
+                except psutil.NoSuchProcess: pass
             measured_i = (total_raw_cpu / (self.num_cores * 100.0)) * 10.0
-            measured_i = min(max(measured_i, 0.0), 10.0)
-            print(f"  [{task.name}] measured_i={measured_i:.2f}")
-
-            return measured_i
-
+            return min(max(measured_i, 0.0), 10.0)
         except psutil.NoSuchProcess:
             return 0.0
 
     def tick_minute(self):
+        self.try_fetch_gi()
+        self.sync_db_jobs() 
+        
         with self.lock:
             print(f"\n--- Minute Tick | GI: {self.current_gi} | Capacity: {self.k * self.current_gi:.2f} ---")
-            
             self.ti = 0.0
-            
-            # --- NEW CLEANUP & REAPING LOGIC ---
             active_tasks = []
+            
             for t in self.running_tasks:
-                # 1. Check if the process finished gracefully and reap the zombie
                 if t.popen is not None and t.popen.poll() is not None:
                     print(f"[CLEANUP] Task {t.name} (PID: {t.pid}) finished with exit code {t.popen.returncode}. Reaped.")
                     t.is_running = False
-                
-                # 2. Double-check psutil status just in case it zombified another way
+                    
+                    if t.job_id is not None:
+                        self.pending_completions.add(t.job_id)
+
                 elif t.proc and t.proc.is_running() and t.proc.status() != psutil.STATUS_ZOMBIE:
                     active_tasks.append(t)
-                
-                # 3. Catch-all for dead processes
                 else:
                     print(f"[CLEANUP] Task {t.name} (PID: {t.pid}) died unexpectedly or became a zombie.")
                     t.is_running = False
                     
+                    if t.job_id is not None:
+                        self.pending_completions.add(t.job_id)
+                    
             self.running_tasks = active_tasks
-            # -----------------------------------
             
             for task in self.running_tasks:
                 actual_i = self.measure_actual_intensiveness(task)
@@ -154,7 +230,6 @@ class GEASScheduler:
                 self.ti += task.i
 
             print(f"[STATUS] Current TI: {self.ti:.2f}")
-
             capacity = self.k * self.current_gi
             
             while self.ti >= capacity and self.running_tasks:
@@ -179,7 +254,7 @@ class GEASScheduler:
         try:
             while True:
                 self.tick_minute()
-                time.sleep(10) # Note: For testing, you might want to lower this to 5 or 10 seconds
+                time.sleep(10) # Testing interval (change to 60 for prod)
         except Exception as e:
             print(f"Scheduler loop error: {e}")
 
@@ -197,71 +272,90 @@ class GEASScheduler:
         print("All tasks have been terminated. Goodbye!")
 
 
-# --- Interactive CLI ---
-def interactive_cli(scheduler):
+def interactive_cli(scheduler, default_initial_i):
     print("\n🌲 Welcome to the Tree-VDF Green Scheduler CLI 🌲")
     print("Commands:")
-    print("  submit <name> \"<command>\" [initial_i]  - Submit a new task")
-    print("  gi <value>                             - Update Greenness Index (0-10)")
+    print("  submit <name> \"<command>\" [initial_i]  - Submit a new task (CLI jobs do not sync to DB)")
+    print("  gi <value>                             - Update Greenness Index (0-10) manually")
     print("  status                                 - View current queue and running tasks")
     print("  exit                                   - Kill all tasks and shutdown")
     
     while True:
         try:
-            # Simple prompt
             user_input = input("\ntree-vdf> ").strip()
-            if not user_input:
-                continue
+            if not user_input: continue
                 
-            # shlex parses quotes properly, e.g., 'sleep 1000' stays together
             parts = shlex.split(user_input)
             cmd = parts[0].lower()
 
             if cmd in ['exit', 'quit']:
                 scheduler.shutdown()
                 break
-                
             elif cmd == 'submit':
                 if len(parts) >= 3:
                     name = parts[1]
                     command = parts[2]
-                    initial_i = float(parts[3]) if len(parts) > 3 else 5.0
+                    initial_i = float(parts[3]) if len(parts) > 3 else default_initial_i
+                    
+                    # Note: job_id is deliberately left as None here to keep CLI pure
                     scheduler.submit_task(Task(name, command, initial_i))
                 else:
-                    print("Usage: submit <name> \"<command>\" [initial_i]")
-                    
+                    print(f"Usage: submit <name> \"<command>\" [initial_i]")
             elif cmd == 'gi':
-                if len(parts) == 2:
-                    scheduler.update_gi(float(parts[1]))
-                else:
-                    print("Usage: gi <0-10>")
-                    
+                if len(parts) == 2: scheduler.update_gi(float(parts[1]))
+                else: print("Usage: gi <0-10>")
             elif cmd == 'status':
                 with scheduler.lock:
                     print(f"\n[SYSTEM STATUS] GI: {scheduler.current_gi} | Capacity: {scheduler.k * scheduler.current_gi:.2f} | Current TI: {scheduler.ti:.2f}")
                     print("--- Running Tasks ---")
-                    for t in scheduler.running_tasks:
-                        print(f"  - {t.name} (PID: {t.pid}, I: {t.i:.2f})")
+                    for t in scheduler.running_tasks: print(f"  - {t.name} (PID: {t.pid}, I: {t.i:.2f})")
                     print("--- Queued Tasks ---")
-                    for t in scheduler.queue:
-                        print(f"  - {t.name} (Initial I: {t.i:.2f}, Paused: {bool(t.pid)})")
-                        
+                    for t in scheduler.queue: print(f"  - {t.name} (Initial I: {t.i:.2f}, Paused: {bool(t.pid)})")
             else:
                 print(f"Unknown command: {cmd}")
-                
-        except Exception as e:
-            print(f"CLI Error: {e}")
+        except Exception as e: print(f"CLI Error: {e}")
         except KeyboardInterrupt:
-            # Catch Ctrl+C in the CLI
             scheduler.shutdown()
             break
 
 if __name__ == "__main__":
-    scheduler = GEASScheduler(k=2.0, alpha=0.3)
+    parser = argparse.ArgumentParser(description="Tree-VDF Green Energy Scheduler")
+    parser.add_argument("--db", type=str, help="Path to the carbon readings SQLite database", default=None)
+    parser.add_argument("--k", type=float, help="System capacity multiplier (k)", default=2.0)
+    parser.add_argument("--alpha", type=float, help="EWMA smoothing factor (alpha)", default=0.7)
+    parser.add_argument("--initial_i", type=float, help="Default initial intensiveness for tasks", default=1.0)
+    parser.add_argument("--zone", type=str, help="The grid zone to fetch carbon readings for", default="US-CAL-CISO")
+    parser.add_argument("--interactive", action="store_true", help="Enable interactive CLI mode")
+    parser.add_argument("--log", type=str, help="Path to log file (used in daemon mode)", default="scheduler.log")
     
-    # Start the scheduler loop in a background daemon thread
-    scheduler_thread = threading.Thread(target=scheduler.run_scheduler_loop, daemon=True)
-    scheduler_thread.start()
-    
-    # Start the interactive CLI in the main thread
-    interactive_cli(scheduler)
+    args = parser.parse_args()
+
+    if not args.interactive:
+        log_fd = open(args.log, "a", buffering=1)
+        sys.stdout = log_fd
+        sys.stderr = log_fd
+
+    print("=========================================")
+    print("🌲 Starting Tree-VDF Green Scheduler 🌲")
+    print("=========================================")
+    for key, value in vars(args).items(): print(f"  {key}: {value}")
+    print(f"  Mode: {'Interactive CLI' if args.interactive else 'Daemon (Background)'}")
+    print("=========================================\n")
+
+    scheduler = GEASScheduler(db_path=args.db, k=args.k, alpha=args.alpha, zone=args.zone)
+
+    def signal_handler(signum, frame):
+        print(f"\n[SYSTEM] Received signal {signum}, initiating graceful shutdown...")
+        scheduler.shutdown()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    if args.interactive:
+        scheduler_thread = threading.Thread(target=scheduler.run_scheduler_loop, daemon=True)
+        scheduler_thread.start()
+        interactive_cli(scheduler, default_initial_i=args.initial_i)
+    else:
+        print("[DAEMON] Scheduler running in background. Waiting for events...")
+        scheduler.run_scheduler_loop()
